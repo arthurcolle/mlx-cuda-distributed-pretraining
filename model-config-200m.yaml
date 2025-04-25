@@ -1,4 +1,4 @@
-name: "Muon-3B"
+name: "Muon-200M"
 overwrite: true
 data:
   input_file: "train.jsonl"
@@ -18,13 +18,13 @@ data:
 model:
   architecture: "llama"
   dimensions:
-    hidden_size: 3072
-    intermediate_size: 8192
-    num_layers: 32
+    hidden_size: 768
+    intermediate_size: 2048
+    num_layers: 12
   attention:
-    num_heads: 24
-    num_kv_heads: 12
-    head_dim: 128
+    num_heads: 12
+    num_kv_heads: 6
+    head_dim: 64
     max_position_embeddings: 4096
   normalization:
     rms_norm_eps: 1.0e-5
@@ -41,9 +41,9 @@ training:
   epochs: null
   hyperparameters:
     batch_size: 32
-    learning_rate: 5.0e-3  # Reduced learning rate for larger model
+    learning_rate: 5.0e-3
     weight_decay: 0.01
-    iters: 10000  # Extended for 3B param model
+    iters: 5000
     
   scheduler:
     type: "cosine_with_warmup"
@@ -57,9 +57,9 @@ logging:
   log_dir: "logs"
   checkpoint_dir: "checkpoints"
   steps:
-    logging_interval: 50
+    logging_interval: 10
     checkpoint_interval: 500
-    validation_interval: 200
+    validation_interval: 100
   metrics:
     log_loss: true
     log_perplexity: true
@@ -70,6 +70,5 @@ logging:
 system:
   seed: 42
   device: "gpu"
-  distributed: true
-  devices: ["mlx"]  # Local MLX device
-  cuda_devices: [0, 1]  # Remote A100 GPUs via Modal
+  distributed: false
+  devices: ["mlx"]

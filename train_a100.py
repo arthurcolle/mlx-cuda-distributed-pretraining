@@ -14,20 +14,17 @@ app = modal.App("mlx-pretrain-a100")
 
 # Create a Modal image with all required dependencies
 image = modal.Image.debian_slim().pip_install(
-    "mlx==0.25.0",
-    "mlx_lm==0.23.2",
-    "mlx_optimizers==0.4.1", 
-    "numpy==2.2.5",
-    "PyYAML==6.0.2",
-    "tokenizers==0.21.1",
-    "tqdm==4.67.1",
+    # No MLX dependency for Modal deployment - will use local gradient aggregation
+    "numpy>=1.24.0",
+    "PyYAML>=6.0",
+    "tokenizers>=0.13.0",
+    "tqdm>=4.66.0",
     "torch>=2.0.0",
-    "matplotlib==3.10.1",
-)
-
-# Create a specialized A100 GPU container for model training
-a100_container = image.pip_install(
-    "datasets>=2.14.5",
+    "matplotlib>=3.7.0",
+    "transformers>=4.30.0",
+    "mpmath>=1.3.0",
+    "datasets>=2.14.0",
+    "typing_extensions>=4.8.0"
 ).run_commands(
     # Install any additional system dependencies
     "apt-get update && apt-get install -y git wget curl",
@@ -35,12 +32,16 @@ a100_container = image.pip_install(
     "DEBIAN_FRONTEND=noninteractive apt-get install -y libnccl2 libnccl-dev",
 )
 
+# Create a specialized A100 GPU container for model training
+a100_container = image.add_local_dir(".", remote_path="/data")
+
 @app.function(
     image=a100_container,
     gpu="A100-40GB:2",  # Request 2x A100 GPUs
     timeout=259200,  # 72 hours max runtime
     retries=1,       # Retry once on failure
-    secrets=[modal.Secret.from_name("huggingface-token")]  # Optional: HF credentials if needed
+    scaledown_window=300,  # 5 minutes idle timeout
+    secrets=[modal.Secret.from_name("distributed-systems")]  # Using distributed-systems secret
 )
 def train_model_a100(config_path, data_dir, run_id, checkpoint=None):
     """
@@ -58,7 +59,7 @@ def train_model_a100(config_path, data_dir, run_id, checkpoint=None):
     import shutil
     
     # Clone the repository
-    subprocess.check_call(["git", "clone", "https://github.com/N8python/mlx-pretrain.git", "/mlx-pretrain"])
+    subprocess.check_call(["git", "clone", "https://github.com/arthurcolle/mlx-cuda-distributed-pretraining.git", "/mlx-pretrain"])
     
     # Change to the repository directory
     os.chdir("/mlx-pretrain")
@@ -117,6 +118,15 @@ def train_model_a100(config_path, data_dir, run_id, checkpoint=None):
     # Print A100 GPU info
     subprocess.check_call(["nvidia-smi"])
     
+    # Install MLX locally in the container for training
+    print("Installing MLX and related packages inside the container...")
+    subprocess.check_call([
+        "pip", "install", 
+        "mlx>=0.0.1",  # Install latest available version
+        "mlx_lm>=0.0.1",
+        "mlx_optimizers>=0.0.1"
+    ])
+    
     # Start training with detailed logging
     print(f"Starting training with command: {' '.join(train_cmd)}")
     subprocess.check_call(train_cmd)
@@ -134,6 +144,8 @@ def train_model_a100(config_path, data_dir, run_id, checkpoint=None):
 @app.function(
     image=a100_container,
     gpu="A100-40GB:1",  # Use 1x A100 for inference
+    scaledown_window=300,  # 5 minutes idle timeout
+    secrets=[modal.Secret.from_name("distributed-systems")]  # Using distributed-systems secret
 )
 def generate_sample(run_name, prompt, run_id):
     """Generate sample text using the trained model"""
@@ -142,7 +154,7 @@ def generate_sample(run_name, prompt, run_id):
     import os
     
     # Clone the repository
-    subprocess.check_call(["git", "clone", "https://github.com/N8python/mlx-pretrain.git", "/mlx-pretrain"])
+    subprocess.check_call(["git", "clone", "https://github.com/arthurcolle/mlx-cuda-distributed-pretraining.git", "/mlx-pretrain"])
     
     # Change to the repository directory
     os.chdir("/mlx-pretrain")
@@ -159,6 +171,15 @@ def generate_sample(run_name, prompt, run_id):
             "runs/"
         ])
     
+    # Install MLX locally in the container for generation
+    print("Installing MLX and related packages inside the container...")
+    subprocess.check_call([
+        "pip", "install", 
+        "mlx>=0.0.1",  # Install latest available version
+        "mlx_lm>=0.0.1",
+        "mlx_optimizers>=0.0.1"
+    ])
+
     # Generate text with the model
     result = subprocess.check_output([
         "python", "generate.py",
