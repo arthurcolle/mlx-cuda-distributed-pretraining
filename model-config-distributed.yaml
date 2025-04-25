@@ -1,4 +1,4 @@
-name: "Llama (2M)"
+name: "Llama (2M) Distributed"
 overwrite: true
 data:
   input_file: "train.jsonl"
@@ -75,6 +75,6 @@ logging:
 system:
   seed: 42
   device: "gpu"  # Options: cpu, gpu
-  distributed: false  # Enable distributed training
-  devices: null  # List of MLX devices to use, e.g. ["gpu", "cpu"]
-  cuda_devices: null  # List of CUDA device IDs to use, e.g. [0, 1]
+  distributed: true  # Enable distributed training
+  devices: ["gpu", "cpu"]  # List of MLX devices to use
+  cuda_devices: [0]  # List of CUDA device IDs to use

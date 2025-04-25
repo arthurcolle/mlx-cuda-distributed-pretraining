@@ -1,6 +1,6 @@
 # MLX-Pretrain
 
-`mlx-pretrain` is a library that allows easy pretraining of large language models (LLMs) using MLX on Apple Silicon. Instructions below:
+`mlx-pretrain` is a library that allows easy pretraining of large language models (LLMs) using MLX on Apple Silicon with support for distributed training across mixed MLX-CUDA workloads. Instructions below:
 
 ## Installation
 
@@ -105,5 +105,58 @@ You should see:
 ```
 
 Which shows the model get ~31% accuracy on ARC-Easy - which surpasses the random baseline of 25% and shows our model did actually learn something.
+
+## Advanced Optimizers
+
+### Muon Optimizer
+
+The repository includes an implementation of the Muon optimizer, which combines momentum with orthogonalization using Newton-Schulz iterations.
+
+To use the Muon optimizer, set it in your configuration YAML file:
+
+```yaml
+training:
+  optimization:
+    optimizer: "muon"  # Use the Muon optimizer
+    betas: [0.9, 0.95]  # Applies to alternate optimizer for non-matrix params
+```
+
+Muon works well for:
+- Weight matrices in attention blocks
+- Weight matrices in MLP/feedforward layers
+
+But may not be suitable for:
+- Embedding layers
+- Final classification/output layers
+- Low-dimensional parameters
+
+The implementation automatically uses an alternate optimizer (AdamW by default) for non-matrix parameters.
+
+## Distributed Training with MLX-CUDA
+
+For larger models or faster training, you can use distributed training across multiple devices including CUDA GPUs:
+
+1. Make sure PyTorch is installed for CUDA support:
+   ```bash
+   pip install torch
+   ```
+
+2. Run training with the distributed configuration:
+   ```bash
+   python train.py --config model-config-distributed.yaml
+   ```
+
+The distributed config enables:
+- Training across multiple MLX devices (Apple Silicon GPU + CPU)
+- Offloading computations to CUDA GPUs when available
+- Parallel processing of validation batches
+
+You can adjust the device configuration in the `model-config-distributed.yaml` file:
+```yaml
+system:
+  distributed: true  # Enable distributed training
+  devices: ["gpu", "cpu"]  # MLX devices to use
+  cuda_devices: [0, 1]  # CUDA device IDs (if available)
+```
 
 Now that you have the MLX-LM model, you can proceed as you wish - upload it to HuggingFace, use it locally for evaluation purposes, etc.

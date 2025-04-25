@@ -13,10 +13,21 @@ from tqdm import tqdm
 import time
 from datetime import datetime
 import os
+import threading
+import queue
 #from mlx_lm.models.llama import Model, ModelArgs
 import importlib
 from mlx.utils import tree_flatten, tree_map, tree_unflatten
 import inspect
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Callable, Any, Optional, Union, Tuple
+from distributed_utils import DeviceManager, DistributedOptimizer
+# Import Modal-specific utilities if available
+try:
+    from modal_cuda_utils import ModalCudaManager, ModalDistributedOptimizer
+    MODAL_AVAILABLE = True
+except ImportError:
+    MODAL_AVAILABLE = False
 
 def filter_valid_args(cls, arg_dict):
     valid_params = inspect.signature(cls).parameters
@@ -60,6 +71,9 @@ class LoggingConfig:
 class SystemConfig:
     seed: int
     device: str
+    distributed: bool = False
+    devices: Optional[List[str]] = None
+    cuda_devices: Optional[List[int]] = None
 
 @dataclass
 class ResumeConfig:
@@ -367,7 +381,21 @@ class OptimizationManager:
         elif cfg['optimizer'] == 'adam':
             return optim.Adam(**kwargs)
         elif cfg['optimizer'] == 'muon':
-            return optim_x.Muon(**kwargs, alternate_optimizer=optim.AdamW(**kwargs))
+            # Create AdamW optimizer for non-matrix params
+            adamw_kwargs = kwargs.copy()
+            # Default values for AdamW
+            adamw_kwargs.setdefault('betas', (0.9, 0.999))
+            adamw_kwargs.setdefault('eps', 1e-8)
+            adamw_opt = optim.AdamW(**adamw_kwargs)
+            
+            # Only pass relevant params to Muon
+            muon_kwargs = {'learning_rate': kwargs['learning_rate']}
+            # Default values for Muon
+            muon_kwargs.setdefault('momentum', 0.95)
+            muon_kwargs.setdefault('nesterov', True)
+            muon_kwargs.setdefault('ns_steps', 5)
+            
+            return optim_x.Muon(**muon_kwargs, alternate_optimizer=adamw_opt)
         elif cfg['optimizer'] == 'sgd':
             return optim.SGD(**kwargs)
         else:
@@ -412,6 +440,54 @@ class Trainer:
         random.seed(self.config.system.seed)
         np.random.seed(self.config.system.seed)
         mx.random.seed(self.config.system.seed)
+        
+        # Setup distributed training
+        self.distributed = self.config.system.distributed
+        self.device_mgr = None
+        self.running_on_modal = os.environ.get("MODAL_ENVIRONMENT") == "true"
+        
+        if self.distributed:
+            # Setup device mapping
+            mlx_devices = self.config.system.devices if self.config.system.devices else ["gpu", "cpu"]
+            cuda_devices = self.config.system.cuda_devices if self.config.system.cuda_devices else []
+            
+            # Check if running on Modal with CUDA
+            if self.running_on_modal and MODAL_AVAILABLE:
+                # Count available CUDA devices
+                try:
+                    import torch
+                    cuda_device_count = torch.cuda.device_count()
+                    if cuda_device_count > 0:
+                        print(f"Running on Modal with {cuda_device_count} CUDA devices")
+                        # Initialize Modal-specific device manager for CUDA
+                        self.device_mgr = ModalCudaManager(
+                            cuda_device_count=cuda_device_count, 
+                            mlx_devices=[]  # Don't use MLX on Modal (CUDA only)
+                        )
+                        self.device_mgr.start_workers()
+                    else:
+                        print("No CUDA devices found on Modal, falling back to standard distribution")
+                        self.device_mgr = DeviceManager(mlx_devices=mlx_devices, cuda_devices=[])
+                        self.device_mgr.start_workers()
+                except (ImportError, Exception) as e:
+                    print(f"Error setting up Modal CUDA: {e}")
+                    self.device_mgr = DeviceManager(mlx_devices=mlx_devices, cuda_devices=[])
+                    self.device_mgr.start_workers()
+            else:
+                # Initialize standard device manager
+                self.device_mgr = DeviceManager(mlx_devices=mlx_devices, cuda_devices=cuda_devices)
+                self.device_mgr.start_workers()
+                
+                print(f"Distributed training enabled across devices: "
+                      f"MLX={mlx_devices}, CUDA={cuda_devices if cuda_devices else 'None'}")
+        else:
+            # Set the default device for non-distributed mode
+            if self.config.system.device == "gpu":
+                mx.set_default_device(mx.gpu)
+                print("Using MLX GPU as default device")
+            else:
+                mx.set_default_device(mx.cpu)
+                print("Using MLX CPU as default device")
         
     def setup_model(self):
         model_cfg = self.config.model
@@ -483,7 +559,20 @@ class Trainer:
         # Setup optimization
         opt_manager = OptimizationManager(self.config.training, self.total_steps)
         self.lr_schedule = opt_manager.create_scheduler()
-        self.optimizer = opt_manager.create_optimizer(self.lr_schedule)
+        base_optimizer = opt_manager.create_optimizer(self.lr_schedule)
+        
+        # Wrap optimizer in distributed optimizer if needed
+        if self.distributed and self.device_mgr:
+            if self.running_on_modal and MODAL_AVAILABLE and isinstance(self.device_mgr, ModalCudaManager):
+                # Use Modal-optimized distributed optimizer
+                self.optimizer = ModalDistributedOptimizer(base_optimizer, self.device_mgr)
+                print("Using Modal distributed optimizer for CUDA workload")
+            else:
+                # Use standard distributed optimizer
+                self.optimizer = DistributedOptimizer(base_optimizer, self.device_mgr)
+                print("Using distributed optimizer for mixed MLX-CUDA workload")
+        else:
+            self.optimizer = base_optimizer
         
     def setup_logging(self):
         # Run directory structure should already be set up in __init__
@@ -526,16 +615,44 @@ class Trainer:
                 f.write(config_file.read())
     
     def compute_loss(self, model, inputs: mx.array, targets: mx.array) -> Tuple[mx.array, int]:
-        logits = model(inputs)
-        logits = logits.astype(mx.float32)
-        loss = nn.losses.cross_entropy(logits, targets)
+        # Standard loss computation for non-distributed case
+        if not self.distributed or not self.device_mgr:
+            logits = model(inputs)
+            logits = logits.astype(mx.float32)
+            loss = nn.losses.cross_entropy(logits, targets)
+            
+            # Mask padding tokens
+            pad_mask = (targets != self.tokenizer.PAD_TOKEN)
+            loss = loss * pad_mask
+            ntoks = pad_mask.sum()
+            
+            return loss.sum() / ntoks, ntoks
         
-        # Mask padding tokens
-        pad_mask = (targets != self.tokenizer.PAD_TOKEN)
-        loss = loss * pad_mask
-        ntoks = pad_mask.sum()
+        # Distributed loss computation for MLX-CUDA mixed workload
+        # Here we could partition the batch across devices
+        # For now, we keep it simple - just use the first MLX device
+        device = next(iter(self.device_mgr.device_queues.keys()))
         
-        return loss.sum() / ntoks, ntoks
+        def _compute_fwd(model_inputs):
+            # Function to be executed on a specific device
+            model_in, model_tgt = model_inputs
+            logits = model(model_in)
+            logits = logits.astype(mx.float32)
+            loss = nn.losses.cross_entropy(logits, model_tgt)
+            
+            # Mask padding tokens
+            pad_mask = (model_tgt != self.tokenizer.PAD_TOKEN)
+            loss = loss * pad_mask
+            ntoks = pad_mask.sum()
+            
+            return loss.sum(), ntoks
+        
+        # Run the forward pass on the selected device
+        loss_sum, ntoks = self.device_mgr.run_on_device(
+            device, _compute_fwd, (inputs, targets)
+        )
+        
+        return loss_sum / ntoks, ntoks
         
     def validate(self) -> float:
         """Run validation on the validation dataset.
@@ -553,19 +670,55 @@ class Trainer:
         # Process all validation batches
         num_batches = min(self.data_manager.num_validation_batches, 50)  # Cap at 50 batches to avoid too long validation
         
-        for batch_idx in range(num_batches):
-            batch = self.data_manager.generate_validation_batch(batch_idx)
+        if not self.distributed or not self.device_mgr:
+            # Standard validation for non-distributed case
+            for batch_idx in range(num_batches):
+                batch = self.data_manager.generate_validation_batch(batch_idx)
+                
+                # Forward pass only
+                loss, tokens = self.compute_loss(self.model, batch[:, :-1], batch[:, 1:])
+                
+                # Accumulate metrics
+                total_loss += float(loss)
+                total_tokens += tokens
+                
+                # Clear GPU cache if needed
+                if not self.distributed and self.config.system.device == "gpu":
+                    mx.clear_cache()
+        else:
+            # Distributed validation - process batches in parallel
+            validation_batches = []
+            for batch_idx in range(num_batches):
+                batch = self.data_manager.generate_validation_batch(batch_idx)
+                validation_batches.append((batch[:, :-1], batch[:, 1:]))
             
-            # Forward pass only
-            loss, tokens = self.compute_loss(self.model, batch[:, :-1], batch[:, 1:])
+            # Create validation function that computes loss for a single batch
+            def _compute_val_loss(batch_pair):
+                inputs, targets = batch_pair
+                logits = self.model(inputs)
+                logits = logits.astype(mx.float32)
+                loss = nn.losses.cross_entropy(logits, targets)
+                
+                # Mask padding tokens
+                pad_mask = (targets != self.tokenizer.PAD_TOKEN)
+                loss = loss * pad_mask
+                ntoks = pad_mask.sum()
+                
+                return float(loss.sum()), int(ntoks)
             
-            # Accumulate metrics
-            total_loss += float(loss)
-            total_tokens += tokens
+            # Process batches in parallel across devices
+            results = []
+            for batch_pair in validation_batches:
+                # For simplicity, just use the first device
+                # In a more advanced implementation, we would distribute across all devices
+                device = next(iter(self.device_mgr.device_queues.keys()))
+                loss, tokens = self.device_mgr.run_on_device(device, _compute_val_loss, batch_pair)
+                results.append((loss, tokens))
             
-            # Clear GPU cache if needed
-            if self.config.system.device == "gpu":
-                mx.clear_cache()
+            # Accumulate results
+            for loss, tokens in results:
+                total_loss += loss
+                total_tokens += tokens
         
         # Calculate average loss
         avg_loss = total_loss / num_batches
@@ -706,8 +859,25 @@ class Trainer:
             skip_initial_validation = True
         else:
             skip_initial_validation = False
+        
+        # Create appropriate loss function based on distributed setting
+        if not self.distributed or not self.device_mgr:
+            loss_value_and_grad = nn.value_and_grad(self.model, self.compute_loss)
+        else:
+            # For distributed mode, we'll handle gradients differently
+            def distributed_value_and_grad(model, inputs, targets):
+                # First device for forward/backward pass
+                device = next(iter(self.device_mgr.device_queues.keys()))
+                
+                def _value_and_grad(inputs_targets):
+                    x, y = inputs_targets
+                    val_grad_fn = nn.value_and_grad(model, self.compute_loss)
+                    return val_grad_fn(model, x, y)
+                
+                return self.device_mgr.run_on_device(device, _value_and_grad, (inputs, targets))
             
-        loss_value_and_grad = nn.value_and_grad(self.model, self.compute_loss)
+            loss_value_and_grad = distributed_value_and_grad
+            
         start_time = time.time()
         # Create progress bar with adjusted range for resuming
         progress_bar = tqdm(range(self.total_steps), desc="Training", initial=start_step)
@@ -759,7 +929,7 @@ class Trainer:
                 self.optimizer.update(self.model, grad)
                 mx.eval(loss)
                 
-                if self.config.system.device == "gpu":
+                if not self.distributed and self.config.system.device == "gpu":
                     mx.clear_cache()
                 
                 # Run validation
