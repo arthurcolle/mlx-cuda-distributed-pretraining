@@ -1,6 +1,22 @@
 # MLX-Pretrain
 
-`mlx-pretrain` is a library that allows easy pretraining of large language models (LLMs) using MLX on Apple Silicon with support for distributed training across mixed MLX-CUDA workloads. Instructions below:
+`mlx-pretrain` is a library that allows easy pretraining of large language models (LLMs) using MLX on Apple Silicon with support for distributed training across mixed MLX-CUDA workloads.
+
+## Repository Organization
+
+This repository has been reorganized for better maintainability. See [README-ORGANIZATION.md](README-ORGANIZATION.md) for details on the new structure.
+
+The code is now organized into the following directories:
+- **core/** - Core training functionality
+- **models/** - Model architectures and attention mechanisms
+- **optimizers/** - Optimizer implementations (AdamW, Muon, Shampoo, etc.)
+- **distributed/** - Distributed training utilities
+- **data/** - Data processing
+- **utils/** - Utility functions and visualization tools
+- **scripts/** - Training and utility scripts
+- **configs/** - Configuration files
+- **tests/** - Test files
+- **docs/** - Documentation
 
 ## Installation
 
@@ -28,7 +44,7 @@ Make sure these are in the same directory as the `train.py` script. You can adju
 Now, we will first train a tokenizer on the dataset. This is a simple BPE tokenizer, and it will be saved to `tokenizer/tokenizer.json`:
 
 ```bash
-python train-tokenizer.py --config tokenizer-config-sample.yaml
+python scripts/train_tokenizer.py --config configs/tokenizer-config-sample.yaml
 ```
 
 This will create a `tokenizer` directory with a `tokenizer.json` file inside (This should take 5-15 minutes).
@@ -36,7 +52,7 @@ This will create a `tokenizer` directory with a `tokenizer.json` file inside (Th
 Now, we can train the toy model, simply run:
 
 ```bash
-python train.py --config model-config-sample.yaml
+python -m core.training --config configs/models/model-config-sample.yaml
 ```
 
 This will train a 2M parameter Llama Model on 200M tokens of Fineweb-Edu. This will take around 2 hours on an M3 Max. If you wish to shorten the training time, modify (in the config file):
@@ -57,7 +73,7 @@ Once the model is done training, it will be saved in the `runs` directory under 
 You view the loss curve by running:
 
 ```bash
-python plot-logs.py "Llama (2M)"
+python -m utils.plotting "Llama (2M)"
 ```
 
 You should see an image like this:
@@ -67,7 +83,7 @@ You should see an image like this:
 You can now generate text with the model. To do this, run:
 
 ```bash
-python generate.py --run "Llama (2M)" --prompt "It is recommended to eat three apples a day, because if you don't, then "
+python -m core.generation --run "Llama (2M)" --prompt "It is recommended to eat three apples a day, because if you don't, then "
 ```
 
 This will generate text using the model (by default, at temperature 1.0). Example output:
@@ -83,7 +99,7 @@ Typically, if you have to talk about the workplace when you are receiving by doi
 Now, we can convert the model to MLX-LM format to use it with `mlx-lm` more generally - this is dead simple, run:
 
 ```bash
-python convert-to-mlx-lm.py --run "Llama (2M)" --out-path "MLX-Llama-2M"
+python scripts/convert-to-mlx-lm.py --run "Llama (2M)" --out-path "MLX-Llama-2M"
 ```
 
 The resulting model can be used with any MLX-LM script. For example, you can evaluate it on ARC-Easy (if you `pip install lm-eval`), via:
@@ -106,7 +122,44 @@ You should see:
 
 Which shows the model get ~31% accuracy on ARC-Easy - which surpasses the random baseline of 25% and shows our model did actually learn something.
 
-## Advanced Optimizers
+## Advanced Features
+
+### Attention Mechanisms
+
+#### FlashAttention
+
+By default, the library uses an optimized FlashAttention implementation for faster training with lower memory usage. FlashAttention is enabled by default in the model configuration:
+
+```yaml
+model:
+  attention:
+    use_flash_attention: true  # Enable FlashAttention
+    flash_block_size: 128      # Block size for tiled attention computation
+```
+
+#### FlexAttention
+
+For more complex attention patterns or customized attention mechanisms, you can use FlexAttention. FlexAttention allows for programmable attention with:
+
+- Custom score modifications (relative position, ALiBi, etc.)
+- Custom mask patterns (sliding window, prefix-LM, sparse attention)
+- Block-sparse attention computation for efficiency
+
+To use FlexAttention, set it in your configuration YAML file:
+
+```yaml
+model:
+  attention:
+    use_flash_attention: false  # Disable standard FlashAttention
+    use_flex_attention: true    # Enable FlexAttention
+    flash_block_size: 128       # Block size for tiled attention computation
+```
+
+You can run the included FlexAttention example with:
+
+```bash
+./scripts/run_flex_attention.sh
+```
 
 ### Muon Optimizer
 
@@ -143,7 +196,7 @@ For larger models or faster training, you can use distributed training across mu
 
 2. Run training with the distributed configuration:
    ```bash
-   python train.py --config model-config-distributed.yaml
+   python -m core.training --config configs/training/model-config-distributed.yaml
    ```
 
 The distributed config enables:
@@ -151,7 +204,7 @@ The distributed config enables:
 - Offloading computations to CUDA GPUs when available
 - Parallel processing of validation batches
 
-You can adjust the device configuration in the `model-config-distributed.yaml` file:
+You can adjust the device configuration in the `configs/training/model-config-distributed.yaml` file:
 ```yaml
 system:
   distributed: true  # Enable distributed training

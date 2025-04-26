@@ -163,18 +163,18 @@ class Shampoo(optim.Optimizer):
                 learning_rate=learning_rate,
                 betas=(self.params.beta1, self.params.beta2),
                 eps=self.params.epsilon,
-                weight_decay=0.0,  # Handle weight decay separately
+                # MLX's Adam doesn't support weight_decay, handle separately
             )
         elif self.params.grafting_optimizer == "momentum":
             self.grafting_optimizer = optim.SGD(
                 learning_rate=learning_rate,
                 momentum=self.params.beta1,
-                weight_decay=0.0,  # Handle weight decay separately
+                # MLX's SGD doesn't support weight_decay, handle separately
             )
         else:  # sgd
             self.grafting_optimizer = optim.SGD(
                 learning_rate=learning_rate,
-                weight_decay=0.0,  # Handle weight decay separately
+                # MLX's SGD doesn't support weight_decay, handle separately
             )
 
     def _init_state(self, param: mx.array, name: str) -> Dict:

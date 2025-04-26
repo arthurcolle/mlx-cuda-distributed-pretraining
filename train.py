@@ -882,7 +882,7 @@ class Trainer:
             metrics.append(f"epoch={current_epoch}/{self.config.training.epochs} ({epoch_step}/{self.steps_per_epoch})")
         
         if self.config.logging.metrics['log_loss']:
-            metrics.append(f"loss={float(loss):.3e}")
+            metrics.append(f"loss={float(loss) if not np.isnan(loss) else 'NaN'}")
             
             # Add validation loss if available
             if val_loss is not None:

@@ -1,100 +1,17 @@
 {
   "workers": [
     {
-      "id": "modal_a100_worker_1",
+      "id": "modal_a100_1",
       "type": "modal",
-      "app_name": "mlx-hybrid-training",
-      "gpu_count": 1,
-      "gpu_type": "A100-40GB",
-      "description": "Modal A100 GPU worker 1"
-    },
-    {
-      "id": "modal_a100_worker_2",
-      "type": "modal",
-      "app_name": "mlx-hybrid-training",
-      "gpu_count": 1,
-      "gpu_type": "A100-40GB",
-      "description": "Modal A100 GPU worker 2"
-    },
-    {
-      "id": "modal_a100_worker_3",
-      "type": "modal",
-      "app_name": "mlx-hybrid-training",
-      "gpu_count": 1,
-      "gpu_type": "A100-40GB",
-      "description": "Modal A100 GPU worker 3"
-    },
-    {
-      "id": "modal_a100_worker_4",
-      "type": "modal",
-      "app_name": "mlx-hybrid-training",
-      "gpu_count": 1,
-      "gpu_type": "A100-40GB",
-      "description": "Modal A100 GPU worker 4"
-    },
-    {
-      "id": "modal_a100_worker_5",
-      "type": "modal",
-      "app_name": "mlx-hybrid-training",
-      "gpu_count": 1,
-      "gpu_type": "A100-40GB",
-      "description": "Modal A100 GPU worker 5"
-    },
-    {
-      "id": "modal_a100_worker_6",
-      "type": "modal",
-      "app_name": "mlx-hybrid-training",
-      "gpu_count": 1,
-      "gpu_type": "A100-40GB",
-      "description": "Modal A100 GPU worker 6"
-    },
-    {
-      "id": "modal_a100_worker_7",
-      "type": "modal",
-      "app_name": "mlx-hybrid-training",
-      "gpu_count": 1,
-      "gpu_type": "A100-40GB",
-      "description": "Modal A100 GPU worker 7"
-    },
-    {
-      "id": "modal_a100_worker_8",
-      "type": "modal",
-      "app_name": "mlx-hybrid-training",
-      "gpu_count": 1,
-      "gpu_type": "A100-40GB",
-      "description": "Modal A100 GPU worker 8"
-    },
-    {
-      "id": "modal_a100_worker_9",
-      "type": "modal",
-      "app_name": "mlx-hybrid-training",
-      "gpu_count": 1,
-      "gpu_type": "A100-40GB",
-      "description": "Modal A100 GPU worker 9"
-    },
-    {
-      "id": "modal_a100_worker_10",
-      "type": "modal",
-      "app_name": "mlx-hybrid-training",
-      "gpu_count": 1,
-      "gpu_type": "A100-40GB",
-      "description": "Modal A100 GPU worker 10"
-    },
-    {
-      "id": "modal_a100_worker_11",
-      "type": "modal",
-      "app_name": "mlx-hybrid-training",
-      "gpu_count": 1,
-      "gpu_type": "A100-40GB",
-      "description": "Modal A100 GPU worker 11"
-    },
-    {
-      "id": "modal_a100_worker_12",
-      "type": "modal",
-      "app_name": "mlx-hybrid-training",
-      "gpu_count": 1,
-      "gpu_type": "A100-40GB",
-      "description": "Modal A100 GPU worker 12"
+      "app_name": "mlx-hybrid-muon-400m",
+      "gpu_count": 3,
+      "gpu_type": "A100-80GB" 
     }
-  ]
+  ],
+  "memory_constraints": {
+    "local_memory_limit_gb": 15,
+    "use_memory_efficient_attention": true,
+    "gradient_checkpointing": true,
+    "optimize_memory_use": true
+  }
 }
