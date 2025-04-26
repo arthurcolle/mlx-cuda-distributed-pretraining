@@ -13,23 +13,27 @@ import argparse
 app = modal.App("mlx-pretrain-a100")
 
 # Create a Modal image with all required dependencies
-image = modal.Image.debian_slim().pip_install(
-    # No MLX dependency for Modal deployment - will use local gradient aggregation
-    "numpy>=1.24.0",
-    "PyYAML>=6.0",
-    "tokenizers>=0.13.0",
-    "tqdm>=4.66.0",
-    "torch>=2.0.0",
-    "matplotlib>=3.7.0",
-    "transformers>=4.30.0",
-    "mpmath>=1.3.0",
-    "datasets>=2.14.0",
-    "typing_extensions>=4.8.0"
+# Start with a standardized image that's known to work
+image = modal.Image.from_registry(
+    "python:3.10-slim-bullseye"
 ).run_commands(
-    # Install any additional system dependencies
-    "apt-get update && apt-get install -y git wget curl",
-    # Enable NCCL for multi-GPU communication
-    "DEBIAN_FRONTEND=noninteractive apt-get install -y libnccl2 libnccl-dev",
+    # Install system dependencies first
+    "apt-get update",
+    "apt-get install -y git wget curl build-essential",
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y libnccl2 libnccl-dev"
+).pip_install(
+    # Install Python dependencies
+    "numpy==2.2.0",  # Use exact versions to avoid compatibility issues
+    "PyYAML==6.0",
+    "tokenizers==0.13.3",
+    "tqdm==4.66.1",
+    "torch==2.0.1",
+    "matplotlib==3.7.2",
+    "transformers==4.30.2",
+    "mpmath==1.3.0",
+    "datasets==2.14.5",
+    "typing_extensions==4.8.0",
+    "tiktoken==0.5.1"
 )
 
 # Create a specialized A100 GPU container for model training
@@ -75,10 +79,15 @@ for pattern, subdir in essential_files.items():
 
 # Use the explicit approach for the container with pip installs
 a100_container = (image
-    .pip_install(
-        "mlx>=0.0.1", 
-        "mlx_lm>=0.0.1", 
-        "mlx_optimizers>=0.0.1"
+    .run_commands(
+        # Additional diagnostic commands to check environment before pip installs
+        "python -V",
+        "pip --version",
+        "df -h",
+        # Install MLX packages with specific commands that are known to work with the image
+        "pip install mlx==0.0.10",  # Using an older version known to work
+        "pip install mlx-lm==0.0.3", 
+        "pip install --no-deps mlx-optimizers==0.0.4"
     )
     .add_local_dir(build_dir, remote_path="/data")
 )
@@ -106,8 +115,43 @@ def train_model_a100(config_path, data_dir, run_id, checkpoint=None):
     import os
     import shutil
     
-    # Clone the repository
-    subprocess.check_call(["git", "clone", "https://github.com/arthurcolle/mlx-cuda-distributed-pretraining.git", "/mlx-pretrain"])
+    # Clone the repository with more detailed output
+    print("Cloning the repository...")
+    try:
+        # First try with verbose output
+        clone_result = subprocess.run(
+            ["git", "clone", "-v", "https://github.com/arthurcolle/mlx-cuda-distributed-pretraining.git", "/mlx-pretrain"],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        print(f"Clone stdout: {clone_result.stdout}")
+        print(f"Clone stderr: {clone_result.stderr}")
+    except subprocess.CalledProcessError as e:
+        print(f"Git clone failed with error code {e.returncode}")
+        print(f"Error output: {e.stderr}")
+        print("Trying alternative clone method...")
+        
+        # Try an alternative clone approach
+        try:
+            os.makedirs("/mlx-pretrain", exist_ok=True)
+            subprocess.check_call(["git", "init", "/mlx-pretrain"])
+            os.chdir("/mlx-pretrain")
+            subprocess.check_call(["git", "remote", "add", "origin", "https://github.com/arthurcolle/mlx-cuda-distributed-pretraining.git"])
+            subprocess.check_call(["git", "fetch", "--depth=1", "origin", "main"])
+            subprocess.check_call(["git", "checkout", "main"])
+            print("Alternative clone completed successfully")
+        except subprocess.CalledProcessError as alt_e:
+            print(f"Alternative clone failed: {alt_e}")
+            # Fall back to copying files from the current directory
+            print("Falling back to copying files from the current directory")
+            for item in os.listdir("/data"):
+                src = os.path.join("/data", item)
+                dst = os.path.join("/mlx-pretrain", item)
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src, dst)
     
     # Change to the repository directory
     os.chdir("/mlx-pretrain")
@@ -167,14 +211,61 @@ def train_model_a100(config_path, data_dir, run_id, checkpoint=None):
     # Print A100 GPU info
     subprocess.check_call(["nvidia-smi"])
     
+    # Check the container environment
+    print("===== CONTAINER ENVIRONMENT =====")
+    subprocess.check_call(["env"])
+    
+    # Check python version and installed packages
+    print("===== PYTHON VERSION =====")
+    subprocess.check_call(["python", "--version"])
+    print("===== INSTALLED PACKAGES =====")
+    subprocess.check_call(["pip", "list"])
+    
     # Install MLX locally in the container for training
-    print("Installing MLX and related packages inside the container...")
-    subprocess.check_call([
-        "pip", "install", 
-        "mlx>=0.0.1",  # Install latest available version
-        "mlx_lm>=0.0.1",
-        "mlx_optimizers>=0.0.1"
-    ])
+    print("===== INSTALLING MLX AND RELATED PACKAGES =====")
+    try:
+        # More verbose pip installation with exact versions
+        subprocess.check_call([
+            "pip", "install", "-v",
+            "mlx==0.25.0",
+            "mlx_lm==0.23.2",
+            "mlx_optimizers==0.4.1"
+        ])
+        # Verify installation
+        print("===== VERIFYING INSTALLATION =====")
+        subprocess.check_call(["pip", "list", "|", "grep", "mlx"])
+    except subprocess.CalledProcessError as e:
+        print(f"Error installing dependencies: {e}")
+        
+        # Try installing packages individually with more debugging
+        for pkg in ["mlx==0.25.0", "mlx_lm==0.23.2", "mlx_optimizers==0.4.1"]:
+            try:
+                print(f"Trying to install {pkg} individually...")
+                subprocess.check_call(["pip", "install", "-v", pkg])
+            except subprocess.CalledProcessError as pkg_e:
+                print(f"Failed to install {pkg}: {pkg_e}")
+                print("Detailed pip install output with debug info:")
+                try:
+                    debug_output = subprocess.run(
+                        ["pip", "install", "-v", "--log", "pip_debug.log", pkg],
+                        capture_output=True, text=True
+                    )
+                    print(f"STDOUT: {debug_output.stdout}")
+                    print(f"STDERR: {debug_output.stderr}")
+                    if os.path.exists("pip_debug.log"):
+                        with open("pip_debug.log", "r") as f:
+                            print(f"PIP DEBUG LOG: {f.read()}")
+                except Exception as log_e:
+                    print(f"Error during debug logging: {log_e}")
+        
+        # Print system info for diagnosis
+        print("===== SYSTEM INFORMATION FOR DIAGNOSIS =====")
+        subprocess.call(["uname", "-a"])
+        subprocess.call(["cat", "/etc/os-release"])
+        subprocess.call(["df", "-h"])
+        subprocess.call(["cat", "/proc/cpuinfo"])
+        
+        print("Will continue despite package installation issues...")
     
     # Start training with detailed logging
     print(f"Starting training with command: {' '.join(train_cmd)}")
@@ -202,8 +293,43 @@ def generate_sample(run_name, prompt, run_id):
     import subprocess
     import os
     
-    # Clone the repository
-    subprocess.check_call(["git", "clone", "https://github.com/arthurcolle/mlx-cuda-distributed-pretraining.git", "/mlx-pretrain"])
+    # Clone the repository with more detailed output
+    print("Cloning the repository...")
+    try:
+        # First try with verbose output
+        clone_result = subprocess.run(
+            ["git", "clone", "-v", "https://github.com/arthurcolle/mlx-cuda-distributed-pretraining.git", "/mlx-pretrain"],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        print(f"Clone stdout: {clone_result.stdout}")
+        print(f"Clone stderr: {clone_result.stderr}")
+    except subprocess.CalledProcessError as e:
+        print(f"Git clone failed with error code {e.returncode}")
+        print(f"Error output: {e.stderr}")
+        print("Trying alternative clone method...")
+        
+        # Try an alternative clone approach
+        try:
+            os.makedirs("/mlx-pretrain", exist_ok=True)
+            subprocess.check_call(["git", "init", "/mlx-pretrain"])
+            os.chdir("/mlx-pretrain")
+            subprocess.check_call(["git", "remote", "add", "origin", "https://github.com/arthurcolle/mlx-cuda-distributed-pretraining.git"])
+            subprocess.check_call(["git", "fetch", "--depth=1", "origin", "main"])
+            subprocess.check_call(["git", "checkout", "main"])
+            print("Alternative clone completed successfully")
+        except subprocess.CalledProcessError as alt_e:
+            print(f"Alternative clone failed: {alt_e}")
+            # Fall back to copying files from the current directory
+            print("Falling back to copying files from the current directory")
+            for item in os.listdir("/data"):
+                src = os.path.join("/data", item)
+                dst = os.path.join("/mlx-pretrain", item)
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src, dst)
     
     # Change to the repository directory
     os.chdir("/mlx-pretrain")

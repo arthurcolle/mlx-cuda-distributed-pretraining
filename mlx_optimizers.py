@@ -4,6 +4,26 @@ import mlx.optimizers as optim
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 from mlx.utils import tree_map, tree_flatten
 
+# Add linear_schedule function that's missing from mlx.optimizers
+def linear_schedule(start_value, end_value, steps):
+    """Creates a linear learning rate schedule.
+    
+    Args:
+        start_value: The initial value
+        end_value: The final value
+        steps: The number of steps to go from start_value to end_value
+        
+    Returns:
+        A function that takes a step and returns the corresponding value.
+    """
+    def schedule(step):
+        if step >= steps:
+            return end_value
+        progress = step / steps
+        return start_value + progress * (end_value - start_value)
+    return schedule
+
+
 class Muon(optim.Optimizer):
     """
     Muon - MomentUm Orthogonalized by Newton-schulz

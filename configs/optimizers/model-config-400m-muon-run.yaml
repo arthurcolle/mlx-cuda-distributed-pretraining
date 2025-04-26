@@ -1,0 +1,80 @@
+data:
+  input_file: train.jsonl
+  preprocessing:
+    chunk_overlap: 128
+    max_context_size: 2048
+  tokenizer:
+    normal_vocab_size: 32000
+    special_tokens:
+      bos: <bos>
+      eos: <eos>
+      pad: <pad>
+  tokenizer_path: tokenizer
+  validation_file: val.jsonl
+logging:
+  checkpoint_dir: checkpoints/muon-400m
+  log_dir: logs
+  metrics:
+    log_learning_rate: true
+    log_loss: true
+    log_perplexity: true
+    log_tokens_per_second: true
+    log_tokens_processed: true
+  steps:
+    checkpoint_interval: 500
+    logging_interval: 50
+    validation_interval: 200
+model:
+  architecture: llama
+  attention:
+    flash_block_size: 128
+    head_dim: 64
+    max_position_embeddings: 4096
+    num_heads: 16
+    num_kv_heads: 8
+    use_flash_attention: true
+  dimensions:
+    hidden_size: 1024
+    intermediate_size: 4096
+    num_layers: 16
+  misc:
+    attention_bias: false
+    mlp_bias: false
+    tie_word_embeddings: true
+  normalization:
+    rms_norm_eps: 1.0e-05
+  rope:
+    scaling: null
+    theta: 10000
+    traditional: false
+name: Muon-400M-20250426_140604
+overwrite: true
+system:
+  cuda_devices:
+  - 0
+  - 1
+  - 2
+  device: gpu
+  devices:
+  - mlx
+  distributed: true
+  memory_limit: 32
+  seed: 42
+training:
+  epochs: null
+  hyperparameters:
+    batch_size: 16
+    gradient_accumulation_steps: 8
+    gradient_clip: 1.0
+    iters: 8000
+    learning_rate: 0.01
+    weight_decay: 0.01
+  optimization:
+    beta1: 0.9
+    beta2: 0.95
+    eps: 1.0e-08
+    optimizer: muon
+  scheduler:
+    min_lr_ratio: 0.05
+    type: cosine_with_warmup
+    warmup_steps: 800

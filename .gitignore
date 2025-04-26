@@ -62,9 +62,20 @@ Thumbs.db
 !validation_test_set.jsonl
 CLAUDE.md
 *.jsonl
-# Logs
-*.log
+
+# Project-specific
+datasets/
+pdf_images/
+processed_dataset/
+checkpoints/
 logs/
+runs/
+*.pid.txt
+monitor_pid.txt
+hybrid_pid.txt
+adamw_pid.txt
+muon_pid.txt
+*.yaml.tmp
 
 # MLX cache
 .mlx_cache/

@@ -1,0 +1,84 @@
+name: "Muon-400M"
+overwrite: true
+data:
+  input_file: "train.jsonl"
+  validation_file: "val.jsonl"
+  tokenizer_path: "tokenizer"
+  preprocessing:
+    max_context_size: 2048
+    chunk_overlap: 128
+    
+  tokenizer:
+    normal_vocab_size: 32000
+    special_tokens:
+      pad: "<pad>"
+      bos: "<bos>"
+      eos: "<eos>"
+
+model:
+  architecture: "llama"
+  dimensions:
+    hidden_size: 1024  # Reduced from 3072 in 3B model
+    intermediate_size: 4096  # Reduced from 8192 in 3B model
+    num_layers: 16  # Reduced from 32 in 3B model
+  attention:
+    num_heads: 16  # Reduced from 24 in 3B model
+    num_kv_heads: 8  # Reduced from 12 in 3B model
+    head_dim: 64  # Smaller head dimension to reduce memory
+    max_position_embeddings: 4096
+    use_flash_attention: true  # Use the optimized FlashAttention implementation
+    flash_block_size: 128  # Block size for tiled attention computation
+  normalization:
+    rms_norm_eps: 1.0e-5
+  rope:
+    theta: 10000
+    traditional: false
+    scaling: null
+  misc:
+    attention_bias: false
+    mlp_bias: false
+    tie_word_embeddings: true
+
+training:
+  epochs: null
+  hyperparameters:
+    batch_size: 16  # Base batch size (actual batch size per device)
+    gradient_accumulation_steps: 8  # Accumulate 8 batches before update
+    learning_rate: 1.0e-2  # Increased for faster convergence
+    weight_decay: 0.01
+    gradient_clip: 1.0  # Add gradient clipping for stability with larger batches
+    iters: 8000  # Adjusted for smaller model
+    
+  scheduler:
+    type: "cosine_with_warmup"
+    min_lr_ratio: 0.05
+    warmup_steps: 800  # Extended warmup for stability with larger effective batch size
+    
+  optimization:
+    optimizer: "muon"
+    # Muon optimizer parameters
+    beta1: 0.9
+    beta2: 0.95
+    eps: 1.0e-8
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints/muon-400m"
+  steps:
+    logging_interval: 50
+    checkpoint_interval: 500
+    validation_interval: 200
+  metrics:
+    log_loss: true
+    log_perplexity: true
+    log_tokens_per_second: true
+    log_learning_rate: true
+    log_tokens_processed: true
+
+system:
+  seed: 42
+  device: "gpu"
+  distributed: true
+  devices: ["mlx"]  # Local MLX device
+  cuda_devices: [0, 1, 2]  # Remote A100 GPUs via Modal (3x A100-80GB)
+  memory_limit: 32  # GB for local device

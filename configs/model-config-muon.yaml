@@ -1,0 +1,75 @@
+name: "Muon-3B"
+overwrite: true
+data:
+  input_file: "train.jsonl"
+  validation_file: "val.jsonl"
+  tokenizer_path: "tokenizer"
+  preprocessing:
+    max_context_size: 2048
+    chunk_overlap: 128
+    
+  tokenizer:
+    normal_vocab_size: 32000
+    special_tokens:
+      pad: "<pad>"
+      bos: "<bos>"
+      eos: "<eos>"
+
+model:
+  architecture: "llama"
+  dimensions:
+    hidden_size: 3072
+    intermediate_size: 8192
+    num_layers: 32
+  attention:
+    num_heads: 24
+    num_kv_heads: 12
+    head_dim: 128
+    max_position_embeddings: 4096
+  normalization:
+    rms_norm_eps: 1.0e-5
+  rope:
+    theta: 10000
+    traditional: false
+    scaling: null
+  misc:
+    attention_bias: false
+    mlp_bias: false
+    tie_word_embeddings: true
+
+training:
+  epochs: null
+  hyperparameters:
+    batch_size: 32
+    learning_rate: 5.0e-3  # Reduced learning rate for larger model
+    weight_decay: 0.01
+    iters: 10000  # Extended for 3B param model
+    
+  scheduler:
+    type: "cosine_with_warmup"
+    min_lr_ratio: 0.05
+    warmup_steps: 500
+    
+  optimization:
+    optimizer: "muon"
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
+  steps:
+    logging_interval: 50
+    checkpoint_interval: 500
+    validation_interval: 200
+  metrics:
+    log_loss: true
+    log_perplexity: true
+    log_tokens_per_second: true
+    log_learning_rate: true
+    log_tokens_processed: true
+
+system:
+  seed: 42
+  device: "gpu"
+  distributed: true
+  devices: ["mlx"]  # Local MLX device
+  cuda_devices: [0, 1]  # Remote A100 GPUs via Modal

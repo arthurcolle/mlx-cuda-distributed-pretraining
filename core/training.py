@@ -32,7 +32,7 @@ from mlx.utils import tree_flatten, tree_map, tree_unflatten
 import inspect
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Callable, Any, Optional, Union, Tuple
-from distributed.distributed_utils import DeviceManager, DistributedOptimizer
+from distributed_utils import DeviceManager, DistributedOptimizer
 # Import Modal-specific utilities if available
 try:
     from modal_cuda_utils import ModalCudaManager, ModalDistributedOptimizer
@@ -882,7 +882,7 @@ class Trainer:
             metrics.append(f"epoch={current_epoch}/{self.config.training.epochs} ({epoch_step}/{self.steps_per_epoch})")
         
         if self.config.logging.metrics['log_loss']:
-            metrics.append(f"loss={float(loss):.3e}")
+            metrics.append(f"loss={loss:.3e}")
             
             # Add validation loss if available
             if val_loss is not None:
