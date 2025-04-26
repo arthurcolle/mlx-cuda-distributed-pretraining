@@ -12,6 +12,7 @@ import queue
 import uuid
 from pathlib import Path
 import mlx.core as mx
+from mlx.utils import tree_flatten
 import numpy as np
 from typing import Dict, List, Callable, Any, Optional, Union, Tuple
 import logging
@@ -28,6 +29,7 @@ def remote_compute_function(operation, payload):
     import torch
     import numpy as np
     import json
+    from mlx.utils import tree_flatten
     
     if operation == "forward_backward":
         # Extract data
@@ -356,7 +358,12 @@ class HybridDeviceManager:
         # This is a simplified implementation - in practice, you'd want
         # more efficient serialization mechanisms
         model_state = {}
-        for name, param in zip(model.parameter_names(), model.parameters()):
+        parameters = model.parameters()
+        # Get parameter names from the flattened parameters
+        flat_params = tree_flatten(parameters)
+        for path, param in flat_params:
+            # Use path as the parameter name (joined with '.')
+            name = '.'.join(str(p) for p in path)
             # Convert MLX arrays to numpy for serialization
             model_state[name] = param.numpy().tolist()
         return model_state
@@ -886,7 +893,6 @@ def create_hybrid_trainer(config_path, remote_workers=None, config_overrides=Non
         model.load_weights(config.data.weight_path, strict=False)
     
     # Log model size
-    from mlx.utils import tree_flatten
     p = sum(v.size for _, v in tree_flatten(model.trainable_parameters())) / 10**6
     logger.info(f"Model has {p:.2f}M parameters")
     
@@ -894,7 +900,7 @@ def create_hybrid_trainer(config_path, remote_workers=None, config_overrides=Non
     num_samples = 1000  # This should be replaced with actual data size
     batch_size = config.training.hyperparameters['batch_size']
     steps_per_epoch = num_samples // batch_size
-    total_steps = config.training.hyperparameters.get('iters', steps_per_epoch)
+    total_steps = config.training.hyperparameters.get('iters') or steps_per_epoch
     
     opt_manager = OptimizationManager(config.training, total_steps)
     lr_schedule = opt_manager.create_scheduler()

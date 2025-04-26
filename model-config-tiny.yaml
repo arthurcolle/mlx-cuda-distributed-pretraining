@@ -1,12 +1,12 @@
-name: "Muon-40M"
+name: "Micro-Tiny-30Epochs"
 overwrite: true
 data:
   input_file: "train.jsonl"
   validation_file: "val.jsonl"
   tokenizer_path: "tokenizer"
   preprocessing:
-    max_context_size: 1024
-    chunk_overlap: 64
+    max_context_size: 64
+    chunk_overlap: 8
     
   tokenizer:
     normal_vocab_size: 32000
@@ -18,14 +18,15 @@ data:
 model:
   architecture: "llama"
   dimensions:
-    hidden_size: 768
-    intermediate_size: 1536
-    num_layers: 6
+    hidden_size: 64
+    intermediate_size: 256
+    num_layers: 4
   attention:
-    num_heads: 12
-    num_kv_heads: 6
-    head_dim: 64
-    max_position_embeddings: 4096
+    num_heads: 2
+    num_kv_heads: 2
+    head_dim: 32
+    max_position_embeddings: 64
+    use_flash_attention: false
   normalization:
     rms_norm_eps: 1.0e-5
   rope:
@@ -36,30 +37,32 @@ model:
     attention_bias: false
     mlp_bias: false
     tie_word_embeddings: true
-    use_flash_attention: false
 
 training:
   epochs: 30
   hyperparameters:
-    batch_size: 64
-    learning_rate: 9.0e-3
+    batch_size: 32
+    gradient_accumulation_steps: 1
+    learning_rate: 3.0e-3
     weight_decay: 0.01
-    iters: 5000
+    gradient_clip: 1.0
     
   scheduler:
     type: "cosine_with_warmup"
-    min_lr_ratio: 0.03
-    warmup_steps: 500
+    min_lr_ratio: 0.1
+    warmup_steps: 100
     
   optimization:
-    optimizer: "muon"
+    optimizer: "adamw"
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
 
 logging:
   log_dir: "logs"
-  checkpoint_dir: "checkpoints"
+  checkpoint_dir: "checkpoints/micro-tiny"
   steps:
     logging_interval: 10
-    checkpoint_interval: 500
+    checkpoint_interval: 200
     validation_interval: 100
   metrics:
     log_loss: true
@@ -73,3 +76,4 @@ system:
   device: "gpu"
   distributed: false
   devices: ["mlx"]
+  cuda_devices: []

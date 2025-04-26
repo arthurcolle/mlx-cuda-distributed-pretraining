@@ -250,29 +250,57 @@ class ModalConnector:
             "DEBIAN_FRONTEND=noninteractive apt-get install -y libnccl2 libnccl-dev"
         )
         
-        # Add local directory to the image and explicitly add local Python modules
-        # to address deprecation warning
+        # Create a temporary build directory with just the files we need
+        import tempfile
+        import shutil
+        import glob
+        
+        # Create a temporary directory for the build context
+        build_dir = tempfile.mkdtemp(prefix="modal_connector_build_")
+        print(f"Created temporary build directory: {build_dir}")
+        
+        # Create essential subdirectories
+        os.makedirs(os.path.join(build_dir, "configs"), exist_ok=True)
+        os.makedirs(os.path.join(build_dir, "tokenizer"), exist_ok=True)
+        
+        # Copy essential files explicitly
+        essential_files = {
+            "*.py": "",
+            "*.yaml": "",
+            "*.json": "",
+            "requirements.txt": "",
+            "configs/*": "configs/",
+            "tokenizer/*": "tokenizer/"
+        }
+        
+        # Copy files to the build directory
+        for pattern, subdir in essential_files.items():
+            dest_dir = os.path.join(build_dir, subdir) if subdir else build_dir
+            os.makedirs(dest_dir, exist_ok=True)
+            
+            for file_path in glob.glob(pattern):
+                if os.path.isfile(file_path):
+                    print(f"Copying {file_path} to {os.path.join(dest_dir, os.path.basename(file_path))}")
+                    shutil.copy2(file_path, os.path.join(dest_dir, os.path.basename(file_path)))
+        
+        # Use the build directory for the container
         container = (image
-            .add_local_dir(".", remote_path="/workspace")
-            .add_local_python_source(
-                "distributed_utils", 
-                "mlx_optimizers", 
-                "modal_cuda_utils", 
-                "train"
+            .pip_install(
+                "mlx>=0.0.1", 
+                "mlx_lm>=0.0.1", 
+                "mlx_optimizers>=0.0.1"
             )
+            .add_local_dir(build_dir, remote_path="/workspace")
         )
         container_image = container
         
-        # Use the global remote_worker function
-        modal_func = self.modal_app.function(
-            image=container,
-            gpu=f"{self.gpu_type}:{self.gpu_count}",
-            timeout=self.timeout,
-            retries=1
-        )(remote_worker)
+        # Store the necessary components to create the Modal function later
+        # Instead of applying @app.function within this method
+        self.container = container
+        self.remote_worker_func = remote_worker
         
-        # Save the function reference
-        self.modal_function = modal_func
+        # Create a placeholder for the actual Modal function
+        self.modal_function = None
         logger.info(f"Modal connector initialized with {self.gpu_count}x {self.gpu_type} GPUs")
     
     def compute_forward_backward(self, model_state, inputs, targets, compute_script=None):
@@ -288,7 +316,7 @@ class ModalConnector:
         Returns:
             Dictionary with loss, tokens processed, and gradients
         """
-        if not self.modal or not self.modal_function:
+        if not self.modal:
             raise RuntimeError("Modal not initialized")
         
         # Extract model configuration
@@ -321,6 +349,15 @@ class ModalConnector:
         if compute_script:
             payload["compute_script"] = compute_script
         
+        # Create the Modal function for this specific run if it doesn't exist
+        if not self.modal_function:
+            self.modal_function = self.modal_app.function(
+                image=self.container,
+                gpu=f"{self.gpu_type}:{self.gpu_count}",
+                timeout=self.timeout,
+                retries=1
+            )(self.remote_worker_func)
+        
         # Execute on Modal
         try:
             with self.modal_app.run():
@@ -342,7 +379,7 @@ class ModalConnector:
         Returns:
             Updated model state
         """
-        if not self.modal or not self.modal_function:
+        if not self.modal:
             raise RuntimeError("Modal not initialized")
         
         # Default optimizer config if not provided
@@ -358,6 +395,15 @@ class ModalConnector:
             "gradients": gradients,
             "optimizer_config": optimizer_config
         }
+        
+        # Create the Modal function for this specific run if it doesn't exist
+        if not self.modal_function:
+            self.modal_function = self.modal_app.function(
+                image=self.container,
+                gpu=f"{self.gpu_type}:{self.gpu_count}",
+                timeout=self.timeout,
+                retries=1
+            )(self.remote_worker_func)
         
         # Execute on Modal
         try:
@@ -375,8 +421,17 @@ class ModalConnector:
         Returns:
             Status information
         """
-        if not self.modal or not self.modal_function:
+        if not self.modal:
             raise RuntimeError("Modal not initialized")
+        
+        # Create the Modal function for this specific run if it doesn't exist
+        if not self.modal_function:
+            self.modal_function = self.modal_app.function(
+                image=self.container,
+                gpu=f"{self.gpu_type}:{self.gpu_count}",
+                timeout=self.timeout,
+                retries=1
+            )(self.remote_worker_func)
         
         try:
             with self.modal_app.run():

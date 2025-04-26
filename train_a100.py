@@ -33,11 +33,59 @@ image = modal.Image.debian_slim().pip_install(
 )
 
 # Create a specialized A100 GPU container for model training
-a100_container = image.add_local_dir(".", remote_path="/data")
+# Copy only the essential files to avoid file change issues
+import tempfile
+import shutil
+
+# Create a specialized A100 GPU container for model training
+# Explicitly add only the specific files we need to avoid modification errors
+import glob
+import shutil
+
+# Print current directory for debugging
+print(f"Current directory: {os.getcwd()}")
+
+# Create a temporary directory for the build context
+build_dir = tempfile.mkdtemp(prefix="modal_build_")
+print(f"Created temporary build directory: {build_dir}")
+
+# Create essential directories in build context
+os.makedirs(os.path.join(build_dir, "configs"), exist_ok=True)
+os.makedirs(os.path.join(build_dir, "tokenizer"), exist_ok=True)
+
+# Copy essential files explicitly
+essential_files = {
+    "*.py": "",
+    "*.yaml": "",
+    "*.json": "",
+    "requirements.txt": "",
+    "configs/*": "configs/",
+    "tokenizer/*": "tokenizer/"
+}
+
+# Copy files to build directory
+for pattern, subdir in essential_files.items():
+    dest_dir = os.path.join(build_dir, subdir) if subdir else build_dir
+    os.makedirs(dest_dir, exist_ok=True)
+    
+    for file_path in glob.glob(pattern):
+        if os.path.isfile(file_path):
+            print(f"Copying {file_path} to {os.path.join(dest_dir, os.path.basename(file_path))}")
+            shutil.copy2(file_path, os.path.join(dest_dir, os.path.basename(file_path)))
+
+# Use the explicit approach for the container with pip installs
+a100_container = (image
+    .pip_install(
+        "mlx>=0.0.1", 
+        "mlx_lm>=0.0.1", 
+        "mlx_optimizers>=0.0.1"
+    )
+    .add_local_dir(build_dir, remote_path="/data")
+)
 
 @app.function(
     image=a100_container,
-    gpu="A100-40GB:2",  # Request 2x A100 GPUs
+    gpu="A100-80GB:3",  # Request 3x A100 80GB GPUs for large memory needs
     timeout=259200,  # 72 hours max runtime
     retries=1,       # Retry once on failure
     scaledown_window=300,  # 5 minutes idle timeout
@@ -79,10 +127,10 @@ def train_model_a100(config_path, data_dir, run_id, checkpoint=None):
     # Ensure distributed training is enabled
     config["system"]["distributed"] = True
     config["system"]["devices"] = []  # No MLX devices
-    config["system"]["cuda_devices"] = [0, 1]  # Use both A100 GPUs
+    config["system"]["cuda_devices"] = [0, 1, 2]  # Use all three A100 GPUs
     
-    # Optimize batch size based on 40GB A100 memory
-    config["training"]["hyperparameters"]["batch_size"] = 64  # Adjusted for A100 40GB
+    # Optimize batch size based on 80GB A100 memory
+    config["training"]["hyperparameters"]["batch_size"] = 128  # Adjusted for A100 80GB
     
     # Save the updated config
     modal_config_path = "/mlx-pretrain/model-config-a100-modal.yaml"
@@ -91,6 +139,7 @@ def train_model_a100(config_path, data_dir, run_id, checkpoint=None):
     
     # Create necessary folders
     os.makedirs("runs", exist_ok=True)
+    os.makedirs("logs", exist_ok=True)
     
     # Prepare training command
     train_cmd = ["python", "train.py", "--config", modal_config_path]
@@ -143,7 +192,7 @@ def train_model_a100(config_path, data_dir, run_id, checkpoint=None):
 
 @app.function(
     image=a100_container,
-    gpu="A100-40GB:1",  # Use 1x A100 for inference
+    gpu="A100-80GB:1",  # Use 1x A100 80GB for inference
     scaledown_window=300,  # 5 minutes idle timeout
     secrets=[modal.Secret.from_name("distributed-systems")]  # Using distributed-systems secret
 )

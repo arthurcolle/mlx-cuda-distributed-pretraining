@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List, Tuple
 import yaml
 import mlx.optimizers as optim
 import mlx_optimizers as optim_x
+from mlx_optimizers import Shampoo, ShampooParams
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
@@ -15,7 +16,15 @@ from datetime import datetime
 import os
 import threading
 import queue
-#from mlx_lm.models.llama import Model, ModelArgs
+# First try custom implementation with Flash Attention
+try:
+    from arch.llama import Model, ModelArgs
+    USING_FLASH_ATTENTION = True
+    print("Using custom Llama implementation with FlashAttention")
+except ImportError:
+    USING_FLASH_ATTENTION = False
+    print("Flash Attention not available, falling back to standard implementation")
+    #from mlx_lm.models.llama import Model, ModelArgs
 import importlib
 from mlx.utils import tree_flatten, tree_map, tree_unflatten
 import inspect
@@ -74,6 +83,7 @@ class SystemConfig:
     distributed: bool = False
     devices: Optional[List[str]] = None
     cuda_devices: Optional[List[int]] = None
+    memory_limit: Optional[int] = None
 
 @dataclass
 class ResumeConfig:
@@ -381,21 +391,61 @@ class OptimizationManager:
         elif cfg['optimizer'] == 'adam':
             return optim.Adam(**kwargs)
         elif cfg['optimizer'] == 'muon':
-            # Create AdamW optimizer for non-matrix params
-            adamw_kwargs = kwargs.copy()
-            # Default values for AdamW
-            adamw_kwargs.setdefault('betas', (0.9, 0.999))
-            adamw_kwargs.setdefault('eps', 1e-8)
-            adamw_opt = optim.AdamW(**adamw_kwargs)
+            # Muon is a variant of Adam with improved convergence properties
+            muon_kwargs = {
+                'learning_rate': kwargs['learning_rate'],
+                'betas': kwargs.get('betas', (0.9, 0.999)),
+                'eps': kwargs.get('eps', 1e-8),
+                'weight_decay': kwargs.get('weight_decay', 0.0)
+            }
             
-            # Only pass relevant params to Muon
-            muon_kwargs = {'learning_rate': kwargs['learning_rate']}
-            # Default values for Muon
-            muon_kwargs.setdefault('momentum', 0.95)
-            muon_kwargs.setdefault('nesterov', True)
-            muon_kwargs.setdefault('ns_steps', 5)
+            return optim_x.Muon(**muon_kwargs)
+        elif cfg['optimizer'] == 'shampoo':
+            # Create Shampoo optimizer with appropriate parameters
+            shampoo_params = ShampooParams(
+                beta1=cfg.get('beta1', 0.9),
+                beta2=cfg.get('beta2', 0.95),
+                epsilon=cfg.get('epsilon', 1e-8),
+                weight_decay=kwargs.get('weight_decay', 0.0),
+                update_period=cfg.get('update_period', 100),
+                start_preconditioning_step=cfg.get('start_preconditioning_step', 1000),
+                preconditioner_epsilon=cfg.get('preconditioner_epsilon', 1e-6),
+                exponent_override=cfg.get('exponent_override', 0.75),
+                use_bias_correction=True,
+                grafting_optimizer=cfg.get('grafting_optimizer', 'adam'),
+                use_decoupled_weight_decay=True
+            )
             
-            return optim_x.Muon(**muon_kwargs, alternate_optimizer=adamw_opt)
+            return Shampoo(learning_rate=kwargs['learning_rate'], params=shampoo_params)
+        elif cfg['optimizer'] == 'hybrid':
+            # Create hybrid optimizer that combines multiple optimizers
+            
+            # Determine which optimizers to use for different parameter types
+            matrix_opt_name = cfg.get('matrix_optimizer', 'muon')
+            non_matrix_opt_name = cfg.get('non_matrix_optimizer', 'adamw')
+            
+            # Create a temporary config for matrix optimizer
+            matrix_cfg = {'optimizer': matrix_opt_name}
+            for k, v in cfg.items():
+                if k not in ['optimizer', 'non_matrix_optimizer']:
+                    matrix_cfg[k] = v
+                    
+            # Create a temporary config for non-matrix optimizer
+            non_matrix_cfg = {'optimizer': non_matrix_opt_name}
+            for k, v in cfg.items():
+                if k not in ['optimizer', 'matrix_optimizer']:
+                    non_matrix_cfg[k] = v
+            
+            # Recursively create the optimizers
+            matrix_optimizer = self.create_optimizer(matrix_cfg)
+            non_matrix_optimizer = self.create_optimizer(non_matrix_cfg)
+            
+            # Create and return the hybrid optimizer
+            return optim_x.HybridOptimizer(
+                learning_rate=kwargs['learning_rate'],
+                matrix_optimizer=matrix_optimizer,
+                non_matrix_optimizer=non_matrix_optimizer
+            )
         elif cfg['optimizer'] == 'sgd':
             return optim.SGD(**kwargs)
         else:
@@ -561,6 +611,14 @@ class Trainer:
         self.lr_schedule = opt_manager.create_scheduler()
         base_optimizer = opt_manager.create_optimizer(self.lr_schedule)
         
+        # Set up gradient accumulation if enabled
+        self.grad_accum_steps = self.config.training.hyperparameters.get('gradient_accumulation_steps', 1)
+        if self.grad_accum_steps > 1:
+            print(f"Using gradient accumulation with {self.grad_accum_steps} steps")
+            # Effective batch size for logging
+            self.effective_batch_size = batch_size * self.grad_accum_steps
+            print(f"Effective batch size: {self.effective_batch_size}")
+        
         # Wrap optimizer in distributed optimizer if needed
         if self.distributed and self.device_mgr:
             if self.running_on_modal and MODAL_AVAILABLE and isinstance(self.device_mgr, ModalCudaManager):
@@ -589,7 +647,10 @@ class Trainer:
             'training_info': {
                 'steps_per_epoch': self.steps_per_epoch,
                 'total_steps': self.total_steps,
-                'epochs': self.config.training.epochs
+                'epochs': self.config.training.epochs,
+                'gradient_accumulation_steps': getattr(self, 'grad_accum_steps', 1),
+                'effective_batch_size': getattr(self, 'effective_batch_size', 
+                                              self.config.training.hyperparameters['batch_size'])
             }
         }
         
@@ -807,6 +868,11 @@ class Trainer:
             
         if self.config.logging.metrics['log_learning_rate']:
             metrics.append(f"lr={self.lr_schedule(step):.3e}")
+
+        # Add gradient accumulation info if enabled
+        if hasattr(self, 'grad_accum_steps') and self.grad_accum_steps > 1:
+            metrics.append(f"accum={self.grad_accum_steps}")
+            metrics.append(f"eff_bs={self.effective_batch_size}")
             
         return " | ".join(metrics)
 
@@ -893,6 +959,10 @@ class Trainer:
                 if self.data_manager.has_validation_data:
                     log_file.write(f"Validation data: {self.config.data.validation_file}\n")
                     log_file.write(f"Validation batches: {self.data_manager.num_validation_batches}\n")
+                # Log gradient accumulation if enabled
+                if hasattr(self, 'grad_accum_steps') and self.grad_accum_steps > 1:
+                    log_file.write(f"Using gradient accumulation with {self.grad_accum_steps} steps\n")
+                    log_file.write(f"Effective batch size: {self.effective_batch_size}\n")
                 log_file.write("=" * 50 + "\n\n")
             else:
                 log_file.write(f"\nResuming training at step {start_step} at {datetime.now()}\n")
@@ -907,10 +977,19 @@ class Trainer:
                 # Add to validation loss history
                 self.validation_losses.append((0, val_loss))
             
+            # Initialize gradient accumulation variables
+            accumulated_gradients = None
+            accumulated_tokens = 0
+            accum_step = 0
+            
             for step in progress_bar:
                 step += start_step
                 if step >= self.total_steps:
                     break
+                    
+                # Check if we need to do gradient accumulation
+                grad_accum_steps = getattr(self, 'grad_accum_steps', 1)
+                
                 # Generate batch
                 batch = self.data_manager.generate_batch(step)
                 
@@ -924,10 +1003,40 @@ class Trainer:
                     clip_value = self.config.training.hyperparameters['gradient_clip']
                     grad = tree_map(lambda x: mx.clip(x, -clip_value, clip_value), grad)
                 
-                # Update model
-                total_tokens += tokens
-                self.optimizer.update(self.model, grad)
-                mx.eval(loss)
+                # Gradient accumulation
+                if grad_accum_steps > 1:
+                    # Scale the gradient by 1/grad_accum_steps
+                    scaled_grad = tree_map(lambda x: x / grad_accum_steps, grad)
+                    
+                    if accumulated_gradients is None:
+                        # First accumulation step
+                        accumulated_gradients = scaled_grad
+                    else:
+                        # Add to accumulated gradients
+                        accumulated_gradients = tree_map(
+                            lambda x, y: x + y, accumulated_gradients, scaled_grad
+                        )
+                    
+                    # Accumulate tokens
+                    accumulated_tokens += tokens
+                    accum_step += 1
+                    
+                    # Only update if we've accumulated enough gradients or if it's the last step
+                    if accum_step == grad_accum_steps or step == self.total_steps - 1:
+                        # Update model with accumulated gradients
+                        total_tokens += accumulated_tokens
+                        self.optimizer.update(self.model, accumulated_gradients)
+                        mx.eval(loss)
+                        
+                        # Reset accumulation
+                        accumulated_gradients = None
+                        accumulated_tokens = 0
+                        accum_step = 0
+                else:
+                    # Standard update without accumulation
+                    total_tokens += tokens
+                    self.optimizer.update(self.model, grad)
+                    mx.eval(loss)
                 
                 if not self.distributed and self.config.system.device == "gpu":
                     mx.clear_cache()
@@ -1003,11 +1112,49 @@ def main():
     parser = argparse.ArgumentParser(description='Train a language model with MLX')
     parser.add_argument('--config', type=str, required=True,
                        help='Path to YAML configuration file')
+    parser.add_argument('--run-id', type=str, default=None,
+                       help='Optional run ID (timestamp will be used if not provided)')
+    parser.add_argument('--log-interval', type=int, default=None,
+                       help='Override logging interval from config (number of steps between logs)')
     args = parser.parse_args()
     # Make 'runs' directory if it doesn't exist
     os.makedirs('runs', exist_ok=True)
-    trainer = Trainer(args.config)
+    
+    # Load config
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Apply command line overrides
+    config_modified = False
+    
+    # Add run_id to config if provided
+    if args.run_id:
+        config['run_id'] = args.run_id
+        config_modified = True
+    
+    # Override logging interval if provided
+    if args.log_interval is not None:
+        if 'logging' not in config:
+            config['logging'] = {}
+        if 'steps' not in config['logging']:
+            config['logging']['steps'] = {}
+        config['logging']['steps']['logging_interval'] = args.log_interval
+        config_modified = True
+            
+    # Write to temporary config file if modified
+    config_path = args.config
+    if config_modified:
+        temp_config_path = f"{args.config}.tmp"
+        with open(temp_config_path, 'w') as f:
+            yaml.dump(config, f)
+        config_path = temp_config_path
+    
+    trainer = Trainer(config_path)
     trainer.train()
+    
+    # Clean up temporary config if created
+    if config_modified and os.path.exists(f"{args.config}.tmp"):
+        os.remove(f"{args.config}.tmp")
 
 if __name__ == "__main__":
     main()
