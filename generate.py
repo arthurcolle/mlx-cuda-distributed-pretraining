@@ -134,14 +134,14 @@ def main():
                     model.eval()
                     # Get model output for the current sequence
                     output = model(all_tokens)
-                        
-                        # Get the last token's logits
-                        if isinstance(output, tuple):
-                            logits = output[0]
-                        else:
-                            logits = output
-                        
-                        next_token_logits = logits[-1, :]
+                    
+                    # Get the last token's logits
+                    if isinstance(output, tuple):
+                        logits = output[0]
+                    else:
+                        logits = output
+                    
+                    next_token_logits = logits[-1, :]
                         
                         # Apply temperature sampling
                         if args.temperature > 0:
