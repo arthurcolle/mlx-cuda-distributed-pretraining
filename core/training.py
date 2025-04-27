@@ -510,8 +510,8 @@ class DataManager:
         batch = [self.tokenizer.tokenize_doc(doc) for doc in docs]
         max_len = max(len(x) for x in batch)
         
-        # Get model's max context size
-        max_context = self.config.model.attention.get('max_position_embeddings', 2048)
+        # Get max context size from preprocessing config
+        max_context = self.config.preprocessing.get('max_context_size', 2048)
         
         # Ensure max_len doesn't exceed model's context window
         max_len = min(max_len, max_context)
