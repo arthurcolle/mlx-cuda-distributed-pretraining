@@ -107,9 +107,18 @@ def main():
         
         # Try with temperature sampling first
         print("Generating with temperature sampling...")
+        
+        # Ensure tokens are integers
+        int_tokens = [int(t) if isinstance(t, (int, float)) else t for t in tokens]
+        
+        # Print token information for debugging
+        if args.debug:
+            print(f"Token types: {[type(t) for t in int_tokens]}")
+            print(f"Tokens: {int_tokens}")
+        
         greedy_output, greedy_score = generate_lite(
                 trainer.model,
-                mx.array(tokens),
+                mx.array(int_tokens),
                 max_tokens=args.max_tokens,
                 sampler=sampler,
                 verbose=True,  # Enable verbose mode to see token-by-token generation
@@ -150,25 +159,74 @@ def main():
             )
     except Exception as e:
         print(f"Error during generation: {e}")
-        # Try fallback to beam search
-        print("Falling back to beam search...")
+        # Try a simple direct generation approach
+        print("Trying simple direct generation...")
         try:
-            greedy_output = beam_search(
+            # Create a very simple generation function
+            def simple_generate(model, prompt_tokens, max_new_tokens=10):
+                # Convert tokens to mx.array if needed
+                if not isinstance(prompt_tokens, mx.array):
+                    prompt_tokens = mx.array(prompt_tokens)
+                
+                # Initialize with prompt tokens
+                all_tokens = prompt_tokens
+                
+                # Generate one token at a time
+                for _ in range(max_new_tokens):
+                    # Get logits for the next token
+                    logits = model(all_tokens)
+                    
+                    # Get the last token's logits
+                    next_token_logits = logits[-1, :]
+                    
+                    # Simple greedy decoding - just take the argmax
+                    next_token = mx.argmax(next_token_logits)
+                    
+                    # Convert to scalar for printing
+                    next_token_id = int(next_token.item())
+                    print(f"Generated token ID: {next_token_id}")
+                    
+                    # Append to the sequence
+                    all_tokens = mx.concatenate([all_tokens, next_token.reshape(1)])
+                
+                return all_tokens
+            
+            # Try with a very limited number of tokens first
+            print("Attempting simple generation with 10 tokens...")
+            all_generated = simple_generate(
                 trainer.model,
                 mx.array(tokens),
-                max_tokens=args.max_tokens,
-                verbose=True,
-                n_beams=4,
-                stop_tokens=[trainer.tokenizer.EOS_TOKEN]
+                max_new_tokens=10
             )
-            # Convert to mx.array if it's a list
-            if isinstance(greedy_output, list):
-                greedy_output = mx.array(greedy_output)
-            greedy_score = 0.0  # No score for beam search
-        except Exception as e2:
-            print(f"Beam search also failed: {e2}")
-            greedy_output = mx.array([])  # Empty array instead of empty list
+            
+            # Extract only the new tokens (excluding prompt)
+            greedy_output = all_generated[len(tokens):]
             greedy_score = 0.0
+            
+        except Exception as e2:
+            print(f"Simple generation also failed: {e2}")
+            print("Trying one more approach with direct model call...")
+            
+            try:
+                # Try just getting the next token prediction
+                prompt_array = mx.array(tokens)
+                print(f"Prompt shape: {prompt_array.shape}")
+                
+                # Get model output for the prompt
+                with mx.capture_operations() as ops:
+                    logits = trainer.model(prompt_array)
+                
+                print(f"Model output shape: {logits.shape}")
+                print(f"Operations captured: {len(ops)}")
+                
+                # Just return the prompt as output since we couldn't generate
+                greedy_output = prompt_array
+                greedy_score = 0.0
+                
+            except Exception as e3:
+                print(f"All generation methods failed: {e3}")
+                greedy_output = mx.array([])
+                greedy_score = 0.0
     # Make sure we have output to display
     if len(greedy_output) > 0:
         # Convert to list if it's an mx.array, or use as is if already a list
@@ -198,11 +256,21 @@ def main():
                 print(f"Model vocabulary size: {model_vocab_size}")
                 
                 # Check if there's a significant mismatch
-                tokenizer_vocab_size = len(trainer.tokenizer.tokenizer.get_vocab())
-                print(f"Tokenizer vocabulary size: {tokenizer_vocab_size}")
-                
-                if model_vocab_size != tokenizer_vocab_size:
-                    print(f"MISMATCH DETECTED: Model expects {model_vocab_size} tokens but tokenizer has {tokenizer_vocab_size}")
+                if hasattr(trainer.tokenizer, 'tokenizer'):
+                    tokenizer_vocab_size = len(trainer.tokenizer.tokenizer.get_vocab())
+                    print(f"Tokenizer vocabulary size: {tokenizer_vocab_size}")
+                    
+                    if model_vocab_size != tokenizer_vocab_size:
+                        print(f"MISMATCH DETECTED: Model expects {model_vocab_size} tokens but tokenizer has {tokenizer_vocab_size}")
+                elif hasattr(trainer.tokenizer, 'external_tokenizer'):
+                    # For TokenizerManager which uses external_tokenizer
+                    print("Using external tokenizer")
+                    if hasattr(trainer.tokenizer.external_tokenizer, 'vocab_size'):
+                        ext_vocab_size = trainer.tokenizer.external_tokenizer.vocab_size
+                        print(f"External tokenizer vocabulary size: {ext_vocab_size}")
+                        
+                        if model_vocab_size != ext_vocab_size:
+                            print(f"MISMATCH DETECTED: Model expects {model_vocab_size} tokens but tokenizer has {ext_vocab_size}")
             except Exception as e:
                 print(f"Error inspecting vocabulary: {e}")
         else:
@@ -215,8 +283,15 @@ def main():
     print(f"Model type: {type(trainer.model).__name__}")
     try:
         # Get tokenizer vocabulary size safely
-        tokenizer_vocab_size = len(trainer.tokenizer.tokenizer.get_vocab())
-        print(f"Tokenizer vocabulary size: {tokenizer_vocab_size}")
+        if hasattr(trainer.tokenizer, 'tokenizer'):
+            tokenizer_vocab_size = len(trainer.tokenizer.tokenizer.get_vocab())
+            print(f"Tokenizer vocabulary size: {tokenizer_vocab_size}")
+        elif hasattr(trainer.tokenizer, 'external_tokenizer'):
+            print("Using external tokenizer")
+            if hasattr(trainer.tokenizer.external_tokenizer, 'vocab_size'):
+                ext_vocab_size = trainer.tokenizer.external_tokenizer.vocab_size
+                print(f"External tokenizer vocabulary size: {ext_vocab_size}")
+        
         print(f"Model vocabulary size: {trainer.model.vocab_size}")
     except Exception as e:
         print(f"Error getting vocabulary info: {e}")
