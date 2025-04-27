@@ -76,7 +76,8 @@ class LoggingConfig:
     checkpoint_dir: str
     steps: Dict[str, int]
     metrics: Dict[str, bool]
-    # Default to 0 (no validation) if not specified
+    # How many checkpoint snapshots to keep (older will be deleted)
+    max_snapshots: int = 5
 
 @dataclass
 class SystemConfig:
@@ -153,12 +154,73 @@ class CheckpointManager:
         return run_dir, run_dir / 'log.txt', checkpoint_dir
         
     @staticmethod
-    def get_checkpoint_paths(checkpoint_path: str) -> tuple[str, str, str]:
-        """Returns the paths for model, optimizer, and state files"""
+    def get_checkpoint_paths(checkpoint_path: str) -> tuple[str, str, str, str]:
+        """Returns the paths for model, optimizer, state, and gradients files"""
         model_path = f"{checkpoint_path}_model.safetensors"
         optimizer_path = f"{checkpoint_path}_optimizer.safetensors"
         state_path = f"{checkpoint_path}_state.json"
-        return model_path, optimizer_path, state_path
+        gradients_path = f"{checkpoint_path}_gradients.safetensors"
+        return model_path, optimizer_path, state_path, gradients_path
+        
+    @staticmethod
+    def cleanup_old_checkpoints(checkpoint_dir: Path, max_snapshots: int = 5, exclude: list = None):
+        """Keeps only the specified number of most recent checkpoints.
+        
+        Args:
+            checkpoint_dir: Directory containing checkpoints
+            max_snapshots: Maximum number of snapshots to keep
+            exclude: List of checkpoint step IDs to exclude from cleanup (e.g. 'final')
+        """
+        if exclude is None:
+            exclude = ['final']  # Always exclude final checkpoint
+            
+        # Get all checkpoint files
+        all_checkpoints = {}
+        for path in checkpoint_dir.glob('step_*_state.json'):
+            # Extract step ID
+            step_str = path.name.split('_')[1]
+            if step_str in exclude:
+                continue
+                
+            try:
+                step = int(step_str)
+                all_checkpoints[step] = path.name.replace('_state.json', '')
+            except ValueError:
+                # Skip non-integer step IDs
+                continue
+        
+        # Check if we need to delete any checkpoints
+        if len(all_checkpoints) <= max_snapshots:
+            return
+            
+        # Sort by step number (oldest first)
+        sorted_steps = sorted(all_checkpoints.keys())
+        # Determine steps to remove
+        steps_to_remove = sorted_steps[:-max_snapshots]
+        
+        # Remove old checkpoints
+        for step in steps_to_remove:
+            basename = all_checkpoints[step]
+            for ext in ['_model.safetensors', '_optimizer.safetensors', '_state.json', '_gradients.safetensors']:
+                file_path = checkpoint_dir / f"{basename}{ext}"
+                if file_path.exists():
+                    file_path.unlink()
+            
+        # Update metadata to remove deleted checkpoints
+        metadata_path = checkpoint_dir.parent / 'metadata.json'
+        if metadata_path.exists():
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+            
+            if 'checkpoints' in metadata:
+                # Filter out deleted checkpoints
+                metadata['checkpoints'] = [
+                    cp for cp in metadata['checkpoints'] 
+                    if not (isinstance(cp['step'], int) and cp['step'] in steps_to_remove)
+                ]
+                
+                with open(metadata_path, 'w') as f:
+                    json.dump(metadata, f, indent=2)
 
 class TokenizerManager:
     def __init__(self, config: DataConfig, run_dir: Optional[Path] = None):
@@ -832,6 +894,12 @@ class Trainer:
         optimizer_state = dict(tree_flatten(self.optimizer.state))
         optimizer_path = self.checkpoint_dir / f'step_{step}_optimizer.safetensors'
         mx.save_safetensors(str(optimizer_path), optimizer_state)
+        # Save gradients if provided
+        if hasattr(self, 'last_update_grad') and self.last_update_grad is not None:
+            # flatten gradient pytree and save
+            grad_dict = dict(tree_flatten(self.last_update_grad))
+            grad_path = self.checkpoint_dir / f'step_{step}_gradients.safetensors'
+            mx.save_safetensors(str(grad_path), grad_dict)
         
         # Save training state
         training_state = {
@@ -870,6 +938,11 @@ class Trainer:
         
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2)
+        # Clean up old snapshots
+        CheckpointManager.cleanup_old_checkpoints(
+            self.checkpoint_dir,
+            max_snapshots=self.config.logging.max_snapshots
+        )
 
     def log_metrics(self, step: int, loss: float, tokens: int, 
                    total_tokens: int, start_time: float, val_loss: float = None) -> str:
@@ -917,8 +990,8 @@ class Trainer:
         # Extract step from checkpoint path
         step_str = checkpoint_path.split('step_')[-1]
         
-        # Get checkpoint file paths
-        model_path, optimizer_path, state_path = CheckpointManager.get_checkpoint_paths(checkpoint_path)
+        # Get checkpoint file paths (model, optimizer, state, gradients)
+        model_path, optimizer_path, state_path, gradients_path = CheckpointManager.get_checkpoint_paths(checkpoint_path)
         
         # Load model weights
         print(f"Loading model weights from {model_path}")
@@ -930,6 +1003,17 @@ class Trainer:
             state_dict = mx.load(optimizer_path)
             state = tree_unflatten(list(state_dict.items()))
             self.optimizer.state = state
+            # Load gradient snapshot if available
+            try:
+                from pathlib import Path
+                if Path(gradients_path).exists():
+                    print(f"Loading gradient snapshot from {gradients_path}")
+                    grad_dict = mx.load(gradients_path)
+                    # rebuild pytree of gradients
+                    self.last_update_grad = tree_unflatten(list(grad_dict.items()))
+            except Exception:
+                # ignore if gradients snapshot not present or error
+                pass
         
         # Load training state
         print(f"Loading training state from {state_path}")
@@ -1017,6 +1101,8 @@ class Trainer:
             accumulated_gradients = None
             accumulated_tokens = 0
             accum_step = 0
+            # Reset last-update gradient
+            self.last_update_grad = None
             
             for step in progress_bar:
                 step += start_step
@@ -1061,6 +1147,8 @@ class Trainer:
                     if accum_step == grad_accum_steps or step == self.total_steps - 1:
                         # Update model with accumulated gradients
                         total_tokens += accumulated_tokens
+                        # record for checkpoint
+                        self.last_update_grad = accumulated_gradients
                         self.optimizer.update(self.model, accumulated_gradients)
                         mx.eval(loss)
                         
@@ -1071,6 +1159,8 @@ class Trainer:
                 else:
                     # Standard update without accumulation
                     total_tokens += tokens
+                    # record for checkpoint
+                    self.last_update_grad = grad
                     self.optimizer.update(self.model, grad)
                     mx.eval(loss)
                 
@@ -1111,6 +1201,8 @@ class Trainer:
                     # Find the most recent validation loss if available
                     last_val_loss = val_loss if val_loss is not None else None
                     # Update total_tokens in the trainer instance for checkpoint saving
+                    self.total_tokens = total_tokens
+                    # include latest gradients in checkpoint
                     self.total_tokens = total_tokens
                     self.save_checkpoint(step + 1, last_val_loss)
         
