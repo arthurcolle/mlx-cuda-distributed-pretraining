@@ -66,22 +66,21 @@ def main():
         if hasattr(trainer.model, 'num_parameters'):
             param_count = trainer.model.num_parameters
         else:
-            # Manual counting - handle different parameter structures
-            param_count = 0
-            for name, param in trainer.model.parameters().items():
-                if hasattr(param, 'size'):
-                    param_count += param.size
-                elif hasattr(param, 'shape'):
-                    param_count += mx.prod(mx.array(param.shape))
-                elif isinstance(param, mx.array):
-                    param_count += param.size
-                elif isinstance(param, dict):
-                    # For nested parameter dictionaries
-                    for k, v in param.items():
-                        if hasattr(v, 'size'):
-                            param_count += v.size
-                        elif isinstance(v, mx.array):
-                            param_count += v.size
+            # Manual counting with recursive function to handle nested dictionaries
+            def count_params(params_dict):
+                count = 0
+                for param in params_dict.values():
+                    if isinstance(param, mx.array):
+                        count += param.size
+                    elif hasattr(param, 'size'):
+                        count += param.size
+                    elif hasattr(param, 'shape'):
+                        count += mx.prod(mx.array(param.shape))
+                    elif isinstance(param, dict):
+                        count += count_params(param)  # Recursively count nested dictionaries
+                return count
+                
+            param_count = count_params(trainer.model.parameters())
         
         print(f"Model has {param_count:,} parameters")
     except Exception as e:
