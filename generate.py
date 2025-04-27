@@ -254,104 +254,29 @@ def main():
                             break
     except Exception as e:
         print(f"Error during generation: {e}")
-        # Try a simple direct generation approach
-        print("Trying simple direct generation...")
-        try:
-            # Create a very simple generation function that doesn't rely on generate_lite
-            def simple_generate(model, prompt_tokens, max_new_tokens=10):
-                # Convert tokens to mx.array if needed
-                if not isinstance(prompt_tokens, mx.array):
-                    prompt_tokens = mx.array(prompt_tokens)
-                
-                # Initialize with prompt tokens
-                all_tokens = prompt_tokens
-                generated_tokens = []
-                
-                # Generate one token at a time
-                for i in range(max_new_tokens):
-                    try:
-                        # Forward pass through the model
-                        with mx.eval_mode():
-                            # Get model output for the current sequence
-                            output = model(all_tokens)
-                            
-                            # Check output shape and type
-                            print(f"Model output type: {type(output)}")
-                            if isinstance(output, tuple):
-                                print(f"Output is a tuple with {len(output)} elements")
-                                # If model returns a tuple, the first element is usually the logits
-                                logits = output[0]
-                            else:
-                                # Otherwise, the output is the logits directly
-                                logits = output
-                            
-                            print(f"Logits shape: {logits.shape}")
-                            
-                            # Get the last token's logits
-                            next_token_logits = logits[-1, :]
-                            
-                            # Simple greedy decoding - just take the argmax
-                            next_token = mx.argmax(next_token_logits)
-                            
-                            # Convert to scalar for printing
-                            next_token_id = int(next_token.item())
-                            print(f"Generated token ID {i+1}: {next_token_id}")
-                            
-                            # Add to our list of generated tokens
-                            generated_tokens.append(next_token_id)
-                            
-                            # Append to the sequence
-                            all_tokens = mx.concatenate([all_tokens, next_token.reshape(1)])
-                    except Exception as e:
-                        print(f"Error generating token {i+1}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        break
-                
-                # Return both the full sequence and just the new tokens
-                return all_tokens, mx.array(generated_tokens) if generated_tokens else mx.array([])
-            
-            # Try with a very limited number of tokens first
-            print("Attempting simple generation with 10 tokens...")
-            all_generated, new_tokens = simple_generate(
-                trainer.model,
-                mx.array(tokens),
-                max_new_tokens=10
-            )
-            
-            # Use the new tokens directly
-            greedy_output = new_tokens
-            greedy_score = 0.0
-            
-        except Exception as e2:
-            print(f"Simple generation also failed: {e2}")
-            print("Trying one more approach with direct model call...")
-            
+        import traceback
+        traceback.print_exc()
+        
+        # Try a completely different approach - just generate a fixed sequence
+        print("\nFalling back to fixed token generation for debugging...")
+        
+        # Create a list of common tokens to try
+        test_tokens = [2, 3, 4, 5, 10, 20, 30, 40, 50, 100]
+        
+        # Try each token and see what it produces
+        for token_id in test_tokens:
             try:
-                # Try just getting the next token prediction
-                prompt_array = mx.array(tokens)
-                print(f"Prompt shape: {prompt_array.shape}")
-                
-                # Get model output for the prompt
-                logits = trainer.model(prompt_array)
-                
-                print(f"Model output shape: {logits.shape}")
-                
-                # Try to get the next token
-                next_token = mx.argmax(logits[-1, :])
-                print(f"Next token prediction: {next_token.item()}")
-                
-                # Create a simple output with just the predicted token
-                greedy_output = mx.array([next_token.item()])
-                greedy_score = 0.0
-                
-            except Exception as e3:
-                print(f"All generation methods failed: {e3}")
-                print("Detailed error:", e3)
-                import traceback
-                traceback.print_exc()
-                greedy_output = mx.array([])
-                greedy_score = 0.0
+                print(f"\nTesting token ID {token_id}:")
+                test_output = mx.array([token_id] * 5)  # Generate 5 of the same token
+                test_text = trainer.tokenizer.detokenize(test_output.tolist())
+                print(f"Token {token_id} produces: '{test_text}'")
+            except Exception as e:
+                print(f"Error testing token {token_id}: {e}")
+        
+        # Just use a fixed set of tokens for output
+        print("\nUsing fixed token sequence for output")
+        greedy_output = mx.array([2, 3, 4, 5, 6])
+        greedy_score = 0.0
     # Make sure we have output to display
     if len(greedy_output) > 0:
         # Convert to list if it's an mx.array, or use as is if already a list
