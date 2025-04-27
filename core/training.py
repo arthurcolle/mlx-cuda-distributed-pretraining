@@ -1758,7 +1758,22 @@ class Trainer:
         with open(self.log_file, 'a') as log_file:
             log_file.write("\n" + "=" * 50 + "\n")
             log_file.write(f"Training completed at {datetime.now()}\n")
-            log_file.write(f"Final training metrics: {metrics}\n")
+            
+            # Create final metrics summary
+            final_metrics = {
+                'total_tokens': int(total_tokens),
+                'tokens_per_sec': float(total_tokens / (time.time() - start_time))
+            }
+            
+            if final_val_loss is not None:
+                final_metrics['val_loss'] = float(final_val_loss)
+                final_metrics['val_ppl'] = float(np.exp(final_val_loss))
+            
+            # Format metrics for logging
+            metrics_str = " | ".join([f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" 
+                                     for k, v in final_metrics.items()])
+            log_file.write(f"Final training metrics: {metrics_str}\n")
+            
             if final_val_loss is not None:
                 log_file.write(f"Final validation loss: {final_val_loss:.4e} (ppl={np.exp(final_val_loss):.2f})\n")
             log_file.write(f"Total tokens processed: {total_tokens/1000:.2f}K\n")
