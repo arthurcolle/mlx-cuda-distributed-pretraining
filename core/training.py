@@ -245,9 +245,16 @@ class TokenizerManager:
     def detokenize(self, tokens: list) -> str:
         if self.external_tokenizer is not None:
             # Use external tokenizer
-            return self.external_tokenizer.decode(tokens.tolist())
+            # Handle both mx.array and list inputs
+            if hasattr(tokens, 'tolist'):
+                return self.external_tokenizer.decode(tokens.tolist())
+            else:
+                return self.external_tokenizer.decode(tokens)
         else:
             # Use byte-level detokenization
+            # Convert mx.array to list if needed
+            if hasattr(tokens, 'tolist'):
+                tokens = tokens.tolist()
             return bytes(tokens).decode('utf-8', errors='ignore')
             
     def tokenize_doc(self, doc: str) -> list:

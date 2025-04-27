@@ -130,9 +130,10 @@ def main():
             for i in range(max_new_tokens):
                 try:
                     # Forward pass through the model
-                    with mx.eval_mode():
-                        # Get model output for the current sequence
-                        output = model(all_tokens)
+                    # MLX doesn't have eval_mode context manager, use model.eval() instead
+                    model.eval()
+                    # Get model output for the current sequence
+                    output = model(all_tokens)
                         
                         # Get the last token's logits
                         if isinstance(output, tuple):
@@ -244,7 +245,7 @@ def main():
                     
                     # Check if this produces better output
                     if len(forced_tokens) > 0:
-                        forced_text = trainer.tokenizer.detokenize(forced_tokens.tolist())
+                        forced_text = trainer.tokenizer.detokenize(forced_tokens)
                         print(f"Output with token ID {force_id}: '{forced_text}'")
                         
                         # If we found a token that doesn't produce %, use it
@@ -268,7 +269,8 @@ def main():
             try:
                 print(f"\nTesting token ID {token_id}:")
                 test_output = mx.array([token_id] * 5)  # Generate 5 of the same token
-                test_text = trainer.tokenizer.detokenize(test_output.tolist())
+                # Pass the array directly, let the detokenize method handle the conversion
+                test_text = trainer.tokenizer.detokenize(test_output)
                 print(f"Token {token_id} produces: '{test_text}'")
             except Exception as e:
                 print(f"Error testing token {token_id}: {e}")
@@ -279,9 +281,8 @@ def main():
         greedy_score = 0.0
     # Make sure we have output to display
     if len(greedy_output) > 0:
-        # Convert to list if it's an mx.array, or use as is if already a list
-        token_list = greedy_output.tolist() if hasattr(greedy_output, 'tolist') else greedy_output
-        output_text = trainer.tokenizer.detokenize(token_list)
+        # Pass the output directly to detokenize, which will handle the conversion
+        output_text = trainer.tokenizer.detokenize(greedy_output)
         print(f"Generated tokens: {token_list}")
         
         if all(c == '%' for c in output_text):
