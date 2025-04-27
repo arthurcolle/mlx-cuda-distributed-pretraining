@@ -161,15 +161,20 @@ def main():
                 n_beams=4,
                 stop_tokens=[trainer.tokenizer.EOS_TOKEN]
             )
+            # Convert to mx.array if it's a list
+            if isinstance(greedy_output, list):
+                greedy_output = mx.array(greedy_output)
             greedy_score = 0.0  # No score for beam search
         except Exception as e2:
             print(f"Beam search also failed: {e2}")
-            greedy_output = []
+            greedy_output = mx.array([])  # Empty array instead of empty list
             greedy_score = 0.0
     # Make sure we have output to display
     if len(greedy_output) > 0:
-        output_text = trainer.tokenizer.detokenize(greedy_output)
-        print(f"Generated tokens: {greedy_output.tolist()}")
+        # Convert to list if it's an mx.array, or use as is if already a list
+        token_list = greedy_output.tolist() if hasattr(greedy_output, 'tolist') else greedy_output
+        output_text = trainer.tokenizer.detokenize(token_list)
+        print(f"Generated tokens: {token_list}")
         
         if all(c == '%' for c in output_text):
             print("WARNING: Model is only generating '%' characters, which suggests a mismatch between the model and tokenizer")
@@ -177,7 +182,14 @@ def main():
             
             # Print token ID information for debugging
             print(f"First few tokens in prompt: {tokens[:5]}")
-            print(f"Token ID 7 corresponds to: '{trainer.tokenizer.detokenize([7])}'")
+            
+            # Try to decode a few different token IDs to see what they produce
+            for test_id in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
+                try:
+                    decoded = trainer.tokenizer.detokenize([test_id])
+                    print(f"Token ID {test_id} corresponds to: '{decoded}'")
+                except Exception as e:
+                    print(f"Error decoding token ID {test_id}: {e}")
             
             # Try to inspect the model's vocabulary
             try:
