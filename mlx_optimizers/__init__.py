@@ -1,10 +1,12 @@
 from mlx_optimizers.shampoo import Shampoo, ShampooParams
-from mlx_optimizers.muon import Muon as MuonOptimizer
+from mlx_optimizers.muon import Muon
 from mlx_optimizers.enhanced_optimizers import AdamWEnhanced, SGDEnhanced, LionEnhanced
 
-# Rename to avoid circular import
-Muon = MuonOptimizer
-from mlx_optimizers.hybrid_optimizer import HybridOptimizer
+try:
+    from mlx_optimizers.hybrid_optimizer import HybridOptimizer
+except ImportError:
+    # Create a placeholder if the file doesn't exist yet
+    HybridOptimizer = None
 
 __all__ = [
     "Shampoo",

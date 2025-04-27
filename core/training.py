@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Union, Callable
 import yaml
 import mlx.optimizers as optim
-import optimizers as optim_x
-from optimizers import Shampoo, ShampooParams, AdamWEnhanced, SGDEnhanced, LionEnhanced
+# Import optimizers from the correct module paths
+import mlx_optimizers as optim_x
+from mlx_optimizers import Shampoo, ShampooParams, AdamWEnhanced, SGDEnhanced, LionEnhanced
 # Import schedule functions from local module to fix missing schedule functions
 from mlx_lm_utils import linear_schedule, cosine_decay, join_schedules
 import mlx.core as mx
@@ -815,13 +816,18 @@ class OptimizationManager:
             return optim.Adam(**kwargs)
         elif cfg['optimizer'] == 'muon':
             # Muon is a variant of Adam with improved convergence properties
-            muon_kwargs = {
-                'learning_rate': kwargs['learning_rate'],
-                'betas': kwargs.get('betas', (0.9, 0.999)),
-                'eps': kwargs.get('eps', 1e-8),
-                'weight_decay': kwargs.get('weight_decay', 0.0)
-            }
-            return optim_x.Muon(**muon_kwargs)
+            try:
+                from mlx_optimizers import Muon
+                muon_kwargs = {
+                    'learning_rate': kwargs['learning_rate'],
+                    'betas': kwargs.get('betas', (0.9, 0.999)),
+                    'eps': kwargs.get('eps', 1e-8),
+                    'weight_decay': kwargs.get('weight_decay', 0.0)
+                }
+                return Muon(**muon_kwargs)
+            except ImportError:
+                self.logger.warning("Muon optimizer not found, falling back to AdamW")
+                return optim.AdamW(**kwargs)
         elif cfg['optimizer'] == 'shampoo':
             # Create Shampoo optimizer with appropriate parameters
             shampoo_params = ShampooParams(
@@ -862,11 +868,16 @@ class OptimizationManager:
             non_matrix_optimizer = self.create_optimizer(non_matrix_cfg)
             
             # Create and return the hybrid optimizer
-            return optim_x.HybridOptimizer(
-                learning_rate=kwargs['learning_rate'],
-                matrix_optimizer=matrix_optimizer,
-                non_matrix_optimizer=non_matrix_optimizer
-            )
+            try:
+                from mlx_optimizers import HybridOptimizer
+                return HybridOptimizer(
+                    learning_rate=kwargs['learning_rate'],
+                    matrix_optimizer=matrix_optimizer,
+                    non_matrix_optimizer=non_matrix_optimizer
+                )
+            except ImportError:
+                self.logger.warning("HybridOptimizer not found, falling back to matrix_optimizer")
+                return matrix_optimizer
         elif cfg['optimizer'] == 'sgd':
             if 'weight_decay' in kwargs:
                 del kwargs['weight_decay']  # MLX SGD doesn't support weight_decay
