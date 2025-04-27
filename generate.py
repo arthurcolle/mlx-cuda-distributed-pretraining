@@ -64,21 +64,35 @@ def main():
         n_beams=4,  # Use beam search for generation
         stop_tokens=[trainer.tokenizer.EOS_TOKEN]
     )"""
-    mx.random.seed(int(time.time() * 1000))
+    # Set a fixed seed for reproducibility during debugging
+    mx.random.seed(42)
+    
+    # Try with a simple greedy sampler first for debugging
+    def greedy_sampler(logprobs):
+        token = mx.argmax(logprobs, axis=-1)
+        print(f"Sampler selected token: {token.item()}")
+        return token
+        
     greedy_output, greedy_score = generate_lite(
             trainer.model,
             mx.array(tokens),
             max_tokens=args.max_tokens,
-            sampler=sampler,
-            verbose=False,
+            sampler=greedy_sampler,  # Use the debugging sampler
+            verbose=True,  # Enable verbose output
             stop_tokens=[trainer.tokenizer.EOS_TOKEN],
             logits_processors=logits_processors
     )
     # Make sure we have output to display
     if len(greedy_output) > 0:
         print(f"Greedy Output: {trainer.tokenizer.detokenize(greedy_output)}")
+        # Print the raw tokens for debugging
+        print(f"Generated tokens: {greedy_output.tolist()}")
     else:
         print("No tokens were generated. Check if the sampler is working correctly.")
+        
+    # Print the model and tokenizer info for debugging
+    print(f"Model type: {type(trainer.model).__name__}")
+    print(f"Tokenizer vocabulary size: {trainer.tokenizer.vocab_size}")
     
     # Print result
     #print(f"Greedy (Score: {score:.3f}): {trainer.tokenizer.detokenize(output)}")

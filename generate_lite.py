@@ -151,6 +151,8 @@ def generate_step(
         # Ensure next_token has a batch dimension (1D array)
         if next_token.ndim == 0:
             next_token = next_token[None]
+        # Force evaluation of the token to ensure it's computed
+        mx.eval(next_token)
         # Handle different logprobs shapes safely
         if logprobs.ndim > 1 and logprobs.shape[0] == 1:
             return next_token, logprobs.squeeze(0)
