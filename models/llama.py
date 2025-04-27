@@ -10,9 +10,9 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx.utils import tree_unflatten
 
-from arch.flash_attention import FlashAttention
-from arch.simple_attention import SimpleAttention
-from arch.flex_attention import FlexAttention
+from models.attention.flash_attention import FlashAttention
+from models.attention.simple_attention import SimpleAttention
+from models.attention.flex_attention import FlexAttention
 
 @dataclass
 class ModelArgs:

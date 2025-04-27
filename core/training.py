@@ -91,6 +91,7 @@ class SystemConfig:
 class ResumeConfig:
     checkpoint: str  # Path to checkpoint base name
     reset_optimizer: bool = False  # Optional flag to reset optimizer state
+    reset_training_state: bool = False  # Optional flag to reset training state
 
 @dataclass
 class Config:
@@ -963,9 +964,22 @@ class Trainer:
             checkpoint_path = self.config.resume.checkpoint
             reset_optimizer = self.config.resume.reset_optimizer
             start_step = self.load_checkpoint(checkpoint_path, reset_optimizer)
-            
-            # If we're resuming, we should skip the initial validation
-            skip_initial_validation = True
+
+            if getattr(self.config.resume, 'reset_training_state', False):
+                # Reset training state while keeping model (and optionally optimizer)
+                start_step = 0
+                self.start_step = 0
+                self.total_tokens = 0
+                self.validation_losses = []
+                # Reset validation pointer if available
+                try:
+                    self.data_manager.val_ptr = 0
+                except Exception:
+                    pass
+                skip_initial_validation = False
+            else:
+                # If we're resuming normally, skip the initial validation
+                skip_initial_validation = True
         else:
             skip_initial_validation = False
         
@@ -1205,3 +1219,69 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# -----------------------------------------------------------------------------
+# Backwards-compatibility helper
+# -----------------------------------------------------------------------------
+# Some auxiliary scripts (e.g. scripts/run_training.py) expect `core.training`
+# to expose a top-level function called `train(config)` that kicks off the
+# training loop.  Historically this function existed in an earlier version of
+# the codebase, but the logic has since been refactored into the `Trainer`
+# class above.  To avoid touching all call-sites we provide a thin wrapper that
+# instantiates a `Trainer` and delegates to its `train()` method.
+#
+# The wrapper accepts either
+#   • a dictionary holding the configuration, or
+#   • a string/Path pointing at a YAML configuration file.
+#
+# When a dictionary is supplied we write it to a temporary YAML file so that we
+# can continue to reuse the existing `Config.from_yaml` loader without
+# duplicating the parsing logic.  The temporary file is cleaned up once
+# training has started (after `Trainer.train()` returns or raises).
+# -----------------------------------------------------------------------------
+
+
+def train(config):
+    """Entry-point retained for legacy compatibility.
+
+    Parameters
+    ----------
+    config : dict | str | pathlib.Path
+        • If *dict*, the configuration contents.
+        • If *str* or *Path*, path to a YAML configuration file.
+    """
+
+    import tempfile
+    import os
+    from pathlib import Path
+    import yaml  # local dependency already imported at module top-level
+
+    # Determine whether we were given a path or a config dictionary.
+    if isinstance(config, (str, Path)):
+        config_path = Path(config).expanduser().resolve()
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        trainer = Trainer(str(config_path))
+        trainer.train()
+        return
+
+    # Otherwise treat *config* as a mapping and materialise it on disk.
+    if not isinstance(config, dict):
+        raise TypeError(
+            "'config' must be either a dict or a path to a YAML file; "
+            f"got {type(config).__name__}."
+        )
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.safe_dump(config, tmp)
+        tmp_path = tmp.name
+
+    try:
+        trainer = Trainer(tmp_path)
+        trainer.train()
+    finally:
+        # Best-effort clean-up of the temporary file.
+        try:
+            os.remove(tmp_path)
+        except FileNotFoundError:
+            pass
