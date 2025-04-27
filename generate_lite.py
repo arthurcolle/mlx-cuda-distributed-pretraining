@@ -147,41 +147,77 @@ def generate_step(
                 # This is likely a dimension mismatch in the attention mechanism
                 # Try to fix the model dimensions
                 if hasattr(model, 'model') and hasattr(model.model, 'layers') and len(model.model.layers) > 0:
-                    # First, analyze the error message to extract the actual dimensions
-                    import re
-                    match = re.search(r'size (\d+) into shape \(1,(\d+),(\d+),(\d+)\)', str(e))
-                    if match:
-                        array_size = int(match.group(1))
-                        seq_len = int(match.group(2))
-                        n_heads = int(match.group(3))
-                        head_dim = int(match.group(4))
+                    # Create a custom attention implementation
+                    def create_custom_attention(layer):
+                        original_call = layer.self_attn.__call__
                         
-                        # Calculate what the head_dim should be based on the array size
-                        # array_size = seq_len * n_heads * head_dim
-                        correct_head_dim = array_size // (seq_len * n_heads)
-                        print(f"Error analysis: array_size={array_size}, seq_len={seq_len}, n_heads={n_heads}")
-                        print(f"Calculated correct head_dim={correct_head_dim}")
+                        def custom_attention(self, x, mask=None, cache=None):
+                            try:
+                                # Try the original implementation first
+                                return original_call(self, x, mask, cache)
+                            except ValueError as e:
+                                if "reshape" in str(e):
+                                    print(f"Using custom attention implementation to fix reshape error")
+                                    
+                                    # Custom reshape function
+                                    def custom_reshape_and_transpose(tensor, b, l, n, h=None):
+                                        """Custom reshape that forces the dimensions to work"""
+                                        # Reshape to 2D first
+                                        flat = mx.reshape(tensor, (b * l, -1))
+                                        # Calculate correct size for each head
+                                        head_size = flat.shape[1] // n
+                                        # Reshape to 3D with correct head size
+                                        reshaped = mx.reshape(flat, (b * l, n, head_size))
+                                        # Reshape to 4D
+                                        reshaped = mx.reshape(reshaped, (b, l, n, head_size))
+                                        # Transpose
+                                        return mx.transpose(reshaped, (0, 2, 1, 3))
+                                    
+                                    # Extract dimensions
+                                    B, L, D = x.shape
+                                    
+                                    # Get QKV projections
+                                    xqkv = self.wqkv(x)
+                                    
+                                    # Split into q, k, v
+                                    chunks = mx.split(xqkv, 3, axis=-1)
+                                    q, k, v = chunks
+                                    
+                                    # Use custom reshape
+                                    q_t = custom_reshape_and_transpose(q, B, L, self.n_heads)
+                                    k_t = custom_reshape_and_transpose(k, B, L, self.n_heads)
+                                    v_t = custom_reshape_and_transpose(v, B, L, self.n_heads)
+                                    
+                                    # Scale the query
+                                    head_dim = q_t.shape[-1]
+                                    q_t = q_t / mx.sqrt(mx.array(head_dim))
+                                    
+                                    # Compute attention scores and apply mask if provided
+                                    scores = mx.matmul(q_t, k_t.transpose(0, 1, 3, 2))
+                                    if mask is not None:
+                                        scores = scores + mask
+                                    
+                                    # Apply softmax and compute weighted sum
+                                    weights = mx.softmax(scores, axis=-1)
+                                    attn_out = mx.matmul(weights, v_t)
+                                    
+                                    # Reshape back to original dimensions
+                                    attn_out = attn_out.transpose(0, 2, 1, 3)
+                                    attn_out = attn_out.reshape(B, L, -1)
+                                    
+                                    # Apply output projection
+                                    return self.out_proj(attn_out)
+                                else:
+                                    raise
                         
-                        # Apply the fix to all layers
-                        for layer in model.model.layers:
-                            if hasattr(layer, 'self_attn'):
-                                layer.self_attn.head_dim = correct_head_dim
-                                print(f"Fixed layer: set head_dim={correct_head_dim}")
-                    else:
-                        # Fallback to the original approach if we can't parse the error
-                        for layer in model.model.layers:
-                            if hasattr(layer, 'self_attn'):
-                                # Get the embedding dimension
-                                if hasattr(layer, 'input_layernorm') and hasattr(layer.input_layernorm, 'weight'):
-                                    hidden_size = layer.input_layernorm.weight.shape[0]
-                                    # Adjust n_heads to be a divisor of hidden_size
-                                    for n_heads in [12, 16, 8, 4]:
-                                        if hidden_size % n_heads == 0:
-                                            head_dim = hidden_size // n_heads
-                                            print(f"Adjusting attention: hidden_size={hidden_size}, n_heads={n_heads}, head_dim={head_dim}")
-                                            layer.self_attn.n_heads = n_heads
-                                            layer.self_attn.head_dim = head_dim
-                                            break
+                        # Replace the attention implementation
+                        layer.self_attn.__call__ = lambda *args, **kwargs: custom_attention(layer.self_attn, *args, **kwargs)
+                        print(f"Applied custom attention implementation to layer")
+                    
+                    # Apply the custom attention to all layers
+                    for layer in model.model.layers:
+                        if hasattr(layer, 'self_attn'):
+                            create_custom_attention(layer)
                 
                 # Try again with adjusted dimensions
                 logits = model(y_tok[None], cache=prompt_cache)
