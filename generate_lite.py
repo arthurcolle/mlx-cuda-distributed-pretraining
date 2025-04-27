@@ -133,13 +133,21 @@ def generate_step(
         if logits_processors:
             nonlocal tokens
             tokens = mx.concat([tokens, y_tok]) if tokens is not None else y_tok
+            idx = tokens.size - 1  # Current position in token sequence
             for processor in logits_processors:
-                logits = processor(tokens, logits)
+                logits = processor(tokens, logits, idx)
 
         maybe_quantize_kv_cache(prompt_cache, quantized_kv_start, kv_group_size, kv_bits)
         logprobs = logits - mx.logsumexp(logits, keepdims=True)
-        next_token = sampler(logprobs)  # shape [1] or [batch_size=1]
-        return next_token, logprobs.squeeze(0)
+        next_token = sampler(logprobs)
+        # Ensure next_token has a batch dimension (1D array)
+        if next_token.ndim == 0:
+            next_token = next_token[None]
+        # Handle different logprobs shapes safely
+        if logprobs.ndim > 1 and logprobs.shape[0] == 1:
+            return next_token, logprobs.squeeze(0)
+        else:
+            return next_token, logprobs
 
     # Prefill stage: feed large chunks of the prompt to fill the cache
     total_prompt_tokens = y.size
