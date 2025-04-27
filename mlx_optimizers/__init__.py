@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,6 @@ class ShampooParams:
     use_decoupled_weight_decay: bool = True  # Whether to use decoupled weight decay
 
 try:
-    from dataclasses import dataclass
     from mlx_optimizers.shampoo import Shampoo
     from mlx_optimizers.muon import Muon
     from mlx_optimizers.enhanced_optimizers import AdamWEnhanced, SGDEnhanced, LionEnhanced
