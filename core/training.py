@@ -352,8 +352,14 @@ class DataManager:
         # Pad sequences
         for i in range(len(batch)):
             batch[i] += [self.tokenizer.PAD_TOKEN] * (max_len - len(batch[i]))
-            
-        return mx.array(batch)
+        
+        # Create array and ensure it's not too large for the model's context window
+        batch_array = mx.array(batch)
+        
+        # Print batch shape for debugging
+        print(f"Created batch with shape: {batch_array.shape}")
+        
+        return batch_array
     
     @property
     def has_validation_data(self) -> bool:
@@ -602,7 +608,8 @@ class Trainer:
             'num_attention_heads': model_cfg.attention['num_heads'],
             'rms_norm_eps': model_cfg.normalization['rms_norm_eps'],
             'vocab_size': self.tokenizer.VOCAB_SIZE,
-            'head_dim': model_cfg.attention['head_dim'],
+            # Ensure head_dim is calculated correctly if not explicitly provided
+            'head_dim': model_cfg.attention.get('head_dim', model_cfg.dimensions['hidden_size'] // model_cfg.attention['num_heads']),
             'max_position_embeddings': model_cfg.attention['max_position_embeddings'],
             'num_key_value_heads': model_cfg.attention['num_kv_heads'],
             'attention_bias': model_cfg.misc['attention_bias'],
@@ -621,6 +628,13 @@ class Trainer:
         valid_args = filter_valid_args(ModelArgs, all_args)
         args = ModelArgs(**valid_args)
 
+        # Print model configuration for debugging
+        print(f"Model configuration:")
+        print(f"  hidden_size: {args.hidden_size}")
+        print(f"  num_attention_heads: {args.num_attention_heads}")
+        print(f"  head_dim: {args.head_dim}")
+        print(f"  hidden_size / num_heads = {args.hidden_size / args.num_attention_heads}")
+        
         self.model = Model(args)
 
         if self.config.data.weight_path is not None:
@@ -716,8 +730,20 @@ class Trainer:
                 f.write(config_file.read())
     
     def compute_loss(self, model, inputs: mx.array, targets: mx.array) -> Tuple[mx.array, int]:
+        # Print input shapes for debugging
+        print(f"Input shape: {inputs.shape}, Target shape: {targets.shape}")
+        
         # Standard loss computation for non-distributed case
         if not self.distributed or not self.device_mgr:
+            # Check if the batch is too large for the model's context window
+            max_ctx = self.config.model.attention.get('max_position_embeddings', 2048)
+            if inputs.shape[1] > max_ctx:
+                print(f"WARNING: Input sequence length {inputs.shape[1]} exceeds model's max context {max_ctx}")
+                # Truncate to avoid shape errors
+                inputs = inputs[:, :max_ctx]
+                targets = targets[:, :max_ctx]
+                print(f"Truncated to: Input shape: {inputs.shape}, Target shape: {targets.shape}")
+            
             logits = model(inputs)
             logits = logits.astype(mx.float32)
             loss = nn.losses.cross_entropy(logits, targets)
@@ -770,6 +796,11 @@ class Trainer:
         
         # Process all validation batches
         num_batches = min(self.data_manager.num_validation_batches, 50)  # Cap at 50 batches to avoid too long validation
+        
+        # Print batch shape information for debugging
+        if num_batches > 0:
+            sample_batch = self.data_manager.generate_validation_batch(0)
+            print(f"Validation batch shape: {sample_batch.shape}")
         
         if not self.distributed or not self.device_mgr:
             # Standard validation for non-distributed case
