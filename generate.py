@@ -45,6 +45,9 @@ def main():
     # Load weights with strict parameter based on command line argument
     trainer.model.load_weights(checkpoint_path, strict=args.strict_loading)
     
+    # Set model to eval mode
+    trainer.model.eval()
+    
     # Prepare input
     tokens = [trainer.tokenizer.BOS_TOKEN] + trainer.tokenizer.tokenize(args.prompt)
     
