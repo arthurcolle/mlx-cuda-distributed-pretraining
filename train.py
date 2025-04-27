@@ -1242,7 +1242,7 @@ class Trainer:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Train a language model with MLX')
-    parser.add_argument('--config', type=str, required=True,
+    parser.add_argument('config', type=str, 
                        help='Path to YAML configuration file')
     parser.add_argument('--run-id', type=str, default=None,
                        help='Optional run ID (timestamp will be used if not provided)')
