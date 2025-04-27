@@ -59,7 +59,7 @@ def main():
     
     # Print model information
     print(f"Model architecture: {type(trainer.model).__name__}")
-    print(f"Model has {sum(p.size for p in trainer.model.parameters().values()):,} parameters")
+    print(f"Model has {sum(p.size for _, p in trainer.model.parameters().items()):,} parameters")
     
     # Prepare input
     tokens = [trainer.tokenizer.BOS_TOKEN] + trainer.tokenizer.tokenize(args.prompt)
