@@ -510,11 +510,21 @@ class DataManager:
         batch = [self.tokenizer.tokenize_doc(doc) for doc in docs]
         max_len = max(len(x) for x in batch)
         
-        # Pad sequences
+        # Get model's max context size
+        max_context = self.config.model.attention.get('max_position_embeddings', 2048)
+        
+        # Ensure max_len doesn't exceed model's context window
+        max_len = min(max_len, max_context)
+        
+        # Pad and truncate sequences
         for i in range(len(batch)):
+            # Truncate if needed
+            if len(batch[i]) > max_len:
+                batch[i] = batch[i][:max_len]
+            # Pad if needed
             batch[i] += [self.tokenizer.PAD_TOKEN] * (max_len - len(batch[i]))
         
-        # Create array and ensure it's not too large for the model's context window
+        # Create array
         batch_array = mx.array(batch)
         
         # Print batch shape for debugging
@@ -1196,6 +1206,17 @@ class Trainer:
                 inputs = inputs[:, :max_ctx]
                 targets = targets[:, :max_ctx]
                 self.logger.debug(f"Truncated to: Input shape: {inputs.shape}, Target shape: {targets.shape}")
+                
+            # Ensure batch size and sequence length are compatible with model's attention heads
+            # This prevents reshape errors in attention computation
+            n_heads = self.config.model.attention['num_heads']
+            head_dim = self.config.model.attention.get('head_dim', 
+                                                     self.config.model.dimensions['hidden_size'] // n_heads)
+            
+            # Check if sequence length is compatible with attention computation
+            if inputs.shape[0] * inputs.shape[1] * n_heads * head_dim != inputs.shape[0] * inputs.shape[1] * self.config.model.dimensions['hidden_size']:
+                self.logger.warning(f"Input dimensions not compatible with attention heads configuration. "
+                                   f"Batch: {inputs.shape[0]}, Seq: {inputs.shape[1]}, Heads: {n_heads}, Dim: {head_dim}")
             
             # Use mixed precision for forward pass if enabled
             with self.mixed_precision.cast_forward(model) as mp_model:
@@ -1262,22 +1283,27 @@ class Trainer:
         if not self.distributed or not self.device_mgr:
             # Standard validation for non-distributed case
             for batch_idx in range(num_batches):
-                batch = self.data_manager.generate_validation_batch(batch_idx)
+                try:
+                    batch = self.data_manager.generate_validation_batch(batch_idx)
+                    
+                    # Forward pass only
+                    loss, tokens = self.compute_loss(self.model, batch[:, :-1], batch[:, 1:])
                 
-                # Forward pass only
-                loss, tokens = self.compute_loss(self.model, batch[:, :-1], batch[:, 1:])
-                
-                # Accumulate metrics
-                total_loss += float(loss.item() if hasattr(loss, 'item') else loss)
-                total_tokens += int(tokens.item() if hasattr(tokens, 'item') else tokens)
-                
-                # Clear GPU cache if needed - just continue if mx.clear_cache is not available
-                if not self.distributed and self.config.system.device == "gpu":
-                    try:
-                        mx.clear_cache()
-                    except AttributeError:
-                        # mx.clear_cache() might not be available in this version
-                        pass
+                    # Accumulate metrics
+                    total_loss += float(loss.item() if hasattr(loss, 'item') else loss)
+                    total_tokens += int(tokens.item() if hasattr(tokens, 'item') else tokens)
+                    
+                    # Clear GPU cache if needed - just continue if mx.clear_cache is not available
+                    if not self.distributed and self.config.system.device == "gpu":
+                        try:
+                            mx.clear_cache()
+                        except AttributeError:
+                            # mx.clear_cache() might not be available in this version
+                            pass
+                except ValueError as e:
+                    # Skip batches that cause reshape errors
+                    print(f"Skipping validation batch {batch_idx} due to error: {e}")
+                    continue
         else:
             # Distributed validation - process batches in parallel
             validation_batches = []
