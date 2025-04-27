@@ -59,9 +59,34 @@ def main():
     
     # Print model information
     print(f"Model architecture: {type(trainer.model).__name__}")
-    # Count parameters correctly by getting the size of each parameter array
-    param_count = sum(p.size for p in trainer.model.parameters().values())
-    print(f"Model has {param_count:,} parameters")
+    
+    # Count parameters correctly - MLX parameters are stored differently
+    try:
+        # Try to get the parameter count from the model directly if available
+        if hasattr(trainer.model, 'num_parameters'):
+            param_count = trainer.model.num_parameters
+        else:
+            # Manual counting - handle different parameter structures
+            param_count = 0
+            for name, param in trainer.model.parameters().items():
+                if hasattr(param, 'size'):
+                    param_count += param.size
+                elif hasattr(param, 'shape'):
+                    param_count += mx.prod(mx.array(param.shape))
+                elif isinstance(param, mx.array):
+                    param_count += param.size
+                elif isinstance(param, dict):
+                    # For nested parameter dictionaries
+                    for k, v in param.items():
+                        if hasattr(v, 'size'):
+                            param_count += v.size
+                        elif isinstance(v, mx.array):
+                            param_count += v.size
+        
+        print(f"Model has {param_count:,} parameters")
+    except Exception as e:
+        print(f"Could not count parameters: {e}")
+        print("Continuing with generation...")
     
     # Prepare input
     tokens = [trainer.tokenizer.BOS_TOKEN] + trainer.tokenizer.tokenize(args.prompt)
