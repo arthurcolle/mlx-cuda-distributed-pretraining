@@ -25,6 +25,10 @@ def main():
                        help='Context size for repetition penalty')
     parser.add_argument('--strict-loading', action='store_true',
                        help='Use strict parameter loading (default: False)')
+    parser.add_argument('--debug', action='store_true',
+                       help='Enable additional debugging output')
+    parser.add_argument('--force-token-id', type=int, default=None,
+                       help='Force generation to use this token ID (for debugging)')
     args = parser.parse_args()
 
     # Load run configuration and initialize trainer
@@ -43,10 +47,19 @@ def main():
     checkpoint_path = str(checkpoint_path)
     
     # Load weights with strict parameter based on command line argument
-    trainer.model.load_weights(checkpoint_path, strict=args.strict_loading)
+    try:
+        trainer.model.load_weights(checkpoint_path, strict=args.strict_loading)
+        print(f"Successfully loaded weights from {checkpoint_path}")
+    except Exception as e:
+        print(f"Warning: Error loading weights: {e}")
+        print("Attempting to continue with partially loaded weights...")
     
     # Set model to eval mode
     trainer.model.eval()
+    
+    # Print model information
+    print(f"Model architecture: {type(trainer.model).__name__}")
+    print(f"Model has {sum(p.size for p in trainer.model.parameters().values()):,} parameters")
     
     # Prepare input
     tokens = [trainer.tokenizer.BOS_TOKEN] + trainer.tokenizer.tokenize(args.prompt)
@@ -84,7 +97,19 @@ def main():
             print("Temperature sampling produced only % characters, trying greedy decoding...")
             # Try with a simple greedy sampler
             def greedy_sampler(logprobs):
-                token = mx.argmax(logprobs, axis=-1)
+                if args.force_token_id is not None:
+                    # Force a specific token ID for debugging
+                    token = mx.array(args.force_token_id)
+                    print(f"Forcing token ID: {args.force_token_id}")
+                else:
+                    # Get top 5 tokens for debugging
+                    if args.debug:
+                        top_tokens = mx.topk(logprobs, k=5)
+                        top_probs = mx.take(logprobs, top_tokens)
+                        print(f"Top tokens: {top_tokens.tolist()}, probs: {mx.exp(top_probs).tolist()}")
+                    
+                    token = mx.argmax(logprobs, axis=-1)
+                
                 print(f"Sampler selected token: {token.item()}")
                 return token
                 
@@ -123,6 +148,25 @@ def main():
         if all(c == '%' for c in output_text):
             print("WARNING: Model is only generating '%' characters, which suggests a mismatch between the model and tokenizer")
             print("Try using a different checkpoint or model configuration")
+            
+            # Print token ID information for debugging
+            print(f"First few tokens in prompt: {tokens[:5]}")
+            print(f"Token ID 7 corresponds to: '{trainer.tokenizer.detokenize([7])}'")
+            
+            # Try to inspect the model's vocabulary
+            try:
+                # Get the model's vocabulary size from the embedding layer
+                model_vocab_size = trainer.model.vocab_size
+                print(f"Model vocabulary size: {model_vocab_size}")
+                
+                # Check if there's a significant mismatch
+                tokenizer_vocab_size = len(trainer.tokenizer.tokenizer.get_vocab())
+                print(f"Tokenizer vocabulary size: {tokenizer_vocab_size}")
+                
+                if model_vocab_size != tokenizer_vocab_size:
+                    print(f"MISMATCH DETECTED: Model expects {model_vocab_size} tokens but tokenizer has {tokenizer_vocab_size}")
+            except Exception as e:
+                print(f"Error inspecting vocabulary: {e}")
         else:
             print(f"Generated Output: {output_text}")
             print(f"Generation Score: {greedy_score:.3f}")
@@ -131,8 +175,13 @@ def main():
         
     # Print the model and tokenizer info for debugging
     print(f"Model type: {type(trainer.model).__name__}")
-    print(f"Tokenizer vocabulary size: {trainer.tokenizer.vocab_size}")
-    print(f"Model vocabulary size: {trainer.model.vocab_size}")
+    try:
+        # Get tokenizer vocabulary size safely
+        tokenizer_vocab_size = len(trainer.tokenizer.tokenizer.get_vocab())
+        print(f"Tokenizer vocabulary size: {tokenizer_vocab_size}")
+        print(f"Model vocabulary size: {trainer.model.vocab_size}")
+    except Exception as e:
+        print(f"Error getting vocabulary info: {e}")
     
     # Print result
     #print(f"Greedy (Score: {score:.3f}): {trainer.tokenizer.detokenize(output)}")
