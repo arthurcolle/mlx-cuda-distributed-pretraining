@@ -378,6 +378,8 @@ class DataManager:
                 chunk_size = self.config.preprocessing['max_context_size']
                 overlap = self.config.preprocessing.get('chunk_overlap', 0)
                 
+                # Set context window to 256
+                chunk_size = 256  # Override with fixed size of 256
                 # Handle overlapping chunks if specified
                 stride = chunk_size - overlap
                 for i in range(0, len(text), stride):
