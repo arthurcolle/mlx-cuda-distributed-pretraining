@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple, Union, Any, Callable
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx.utils import tree_unflatten
+from mlx.utils import tree_unflatten, tree_flatten
 
 from models.attention.flash_attention import FlashAttention
 from models.attention.simple_attention import SimpleAttention

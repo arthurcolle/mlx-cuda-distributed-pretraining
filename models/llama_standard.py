@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx.utils import tree_unflatten
+from mlx.utils import tree_unflatten, tree_flatten
 
 @dataclass
 class ModelArgs:
