@@ -21,4 +21,4 @@ mkdir -p logs
 
 # Run training with the 200M model config
 echo "Starting training of 200M Muon model..."
-python train.py --config model-config-200m.yaml 2>&1 | tee logs/train_200m_$(date +%Y%m%d_%H%M%S).log
+python train.py --config configs/model-config-200m.yaml 2>&1 | tee logs/train_200m_$(date +%Y%m%d_%H%M%S).log

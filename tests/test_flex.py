@@ -1,4 +1,4 @@
-from arch.llama import Model, ModelArgs
+from models.llama import Model, ModelArgs
 
 # Create model args with flex attention
 args = ModelArgs(

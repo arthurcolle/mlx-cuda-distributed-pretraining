@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 import mlx.core as mx
-from train import Trainer
+from core.training import Trainer
 import mlx.nn as nn
 import time
 from generate_lite import generate_lite, beam_search

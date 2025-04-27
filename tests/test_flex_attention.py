@@ -8,7 +8,7 @@ import unittest
 import mlx.core as mx
 import numpy as np
 
-from arch import FlexAttention, flex_attention, create_block_mask
+from models.attention.flex_attention import FlexAttention, flex_attention, create_block_mask
 
 
 class TestFlexAttention(unittest.TestCase):

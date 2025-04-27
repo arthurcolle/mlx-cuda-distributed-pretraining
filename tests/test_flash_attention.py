@@ -3,7 +3,7 @@
 
 import mlx.core as mx
 import mlx.nn as nn
-from arch.flash_attention import FlashAttention
+from models.attention.flash_attention import FlashAttention
 
 def test_flash_attention():
     """Test the FlashAttention implementation with different numbers of heads"""

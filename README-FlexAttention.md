@@ -14,7 +14,7 @@ FlexAttention is a flexible, programmable attention mechanism that provides near
 ### Basic Usage
 
 ```python
-from arch import FlexAttention
+from models.attention.flex_attention import FlexAttention
 
 # Initialize the attention module
 attention = FlexAttention(
@@ -62,7 +62,7 @@ output = attention(input_tensor, mask_mod_fn=sliding_causal_mask)
 ### Precomputed Block Mask
 
 ```python
-from arch import create_block_mask
+from models.attention.flex_attention import create_block_mask
 
 # Create a block mask once
 block_mask = create_block_mask(
@@ -81,7 +81,7 @@ output = attention(input_tensor, block_mask=block_mask)
 ### Standalone Function
 
 ```python
-from arch import flex_attention
+from models.attention.flex_attention import flex_attention
 
 # Use the standalone function with Q, K, V tensors
 output = flex_attention(

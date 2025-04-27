@@ -9,8 +9,8 @@ import mlx.optimizers as optim
 from mlx.utils import tree_map, tree_flatten
 from typing import Any, Callable, Dict, Optional, Tuple, Union, List
 
-from mlx_optimizers.shampoo import Shampoo, ShampooParams
-from mlx_optimizers.muon import Muon
+from optimizers.shampoo import Shampoo, ShampooParams
+from optimizers.muon import Muon
 
 
 class HybridOptimizer(optim.Optimizer):

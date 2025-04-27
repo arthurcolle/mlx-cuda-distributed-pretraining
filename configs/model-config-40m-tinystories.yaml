@@ -1,0 +1,81 @@
+name: "MLX-40M-TinyStories-20250426_211529"
+overwrite: true
+
+data:
+  input_file: "/Users/agent/mlx-pretrain/processed_dataset/train.jsonl"
+  validation_file: "/Users/agent/mlx-pretrain/processed_dataset/val.jsonl"
+  tokenizer_path: "/Users/agent/mlx-pretrain/processed_dataset/tokenizer"
+  preprocessing:
+    max_context_size: 1024
+    chunk_overlap: 64
+    
+  tokenizer:
+    normal_vocab_size: 8000
+    special_tokens:
+      pad: "<pad>"
+      bos: "<bos>"
+      eos: "<eos>"
+
+model:
+  architecture: "llama"
+  dimensions:
+    hidden_size: 768
+    intermediate_size: 1536
+    num_layers: 6
+  attention:
+    num_heads: 12
+    num_kv_heads: 6
+    head_dim: 64
+    max_position_embeddings: 2048
+    use_flash_attention: false
+  normalization:
+    rms_norm_eps: 1.0e-5
+  rope:
+    theta: 10000
+    traditional: false
+    scaling: null
+  misc:
+    attention_bias: false
+    mlp_bias: false
+    tie_word_embeddings: true
+
+training:
+  epochs: 5
+  hyperparameters:
+    batch_size: 32
+    gradient_accumulation_steps: 2
+    learning_rate: 6.0e-4
+    weight_decay: 0.01
+    gradient_clip: 1.0
+    iters: 10000
+    
+  scheduler:
+    type: "cosine_with_warmup"
+    min_lr_ratio: 0.1
+    warmup_steps: 500
+    
+  optimization:
+    optimizer: "adamw"
+    betas: [0.9, 0.95]
+    eps: 1.0e-8
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints/40m-tinystories"
+  steps:
+    logging_interval: 10
+    checkpoint_interval: 200
+    validation_interval: 50
+  metrics:
+    log_loss: true
+    log_perplexity: true
+    log_tokens_per_second: true
+    log_learning_rate: true
+    log_tokens_processed: true
+
+system:
+  seed: 42
+  device: "gpu"
+  distributed: false
+  devices: ["mlx"]
+  cuda_devices: []
