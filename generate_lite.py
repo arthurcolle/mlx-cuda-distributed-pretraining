@@ -135,6 +135,9 @@ def generate_step(
 
     def _step(y_tok: mx.array):
         """One forward pass step: produce next-token logits, apply processors."""
+        # Ensure y_tok is 1D before adding batch dimension
+        if y_tok.ndim == 0:
+            y_tok = y_tok[None]
         logits = model(y_tok[None], cache=prompt_cache)
         # logits shape: [1, seq_len=1, vocab_size]
         logits = logits[:, -1, :]  # take the last token

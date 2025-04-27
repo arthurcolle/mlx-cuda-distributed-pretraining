@@ -133,7 +133,8 @@ def main():
                     # MLX doesn't have eval_mode context manager, use model.eval() instead
                     model.eval()
                     # Get model output for the current sequence
-                    output = model(all_tokens)
+                    # Add batch dimension to ensure shape is [batch=1, seq_len, hidden_dim]
+                    output = model(all_tokens[None])
                     
                     # Get the last token's logits
                     if isinstance(output, tuple):
@@ -163,7 +164,7 @@ def main():
                     generated_tokens.append(next_token_id)
                     
                     # Append to the sequence
-                    all_tokens = mx.concatenate([all_tokens, next_token.reshape(1)])
+                    all_tokens = mx.concatenate([all_tokens, next_token.reshape(-1)])
                 except Exception as e:
                     print(f"Error generating token {i+1}: {e}")
                     import traceback
