@@ -59,43 +59,80 @@ def main():
     )
     
     # Generate
-    """output = beam_search(
-        trainer.model,
-        mx.array(tokens),
-        max_tokens=args.max_tokens,  # Limit the max tokens to generate
-        verbose=True,
-        n_beams=4,  # Use beam search for generation
-        stop_tokens=[trainer.tokenizer.EOS_TOKEN]
-    )"""
-    # Set a fixed seed for reproducibility during debugging
-    mx.random.seed(42)
+    # Print the prompt first
+    print(f"Prompt: {args.prompt}")
     
-    # Try with a simple greedy sampler first for debugging
-    def greedy_sampler(logprobs):
-        token = mx.argmax(logprobs, axis=-1)
-        print(f"Sampler selected token: {token.item()}")
-        return token
+    try:
+        # Set a random seed for generation
+        mx.random.seed(int(time.time() * 1000))
         
-    greedy_output, greedy_score = generate_lite(
-            trainer.model,
-            mx.array(tokens),
-            max_tokens=args.max_tokens,
-            sampler=greedy_sampler,  # Use the debugging sampler
-            verbose=True,  # Enable verbose output
-            stop_tokens=[trainer.tokenizer.EOS_TOKEN],
-            logits_processors=logits_processors
-    )
+        # Try with temperature sampling first
+        print("Generating with temperature sampling...")
+        greedy_output, greedy_score = generate_lite(
+                trainer.model,
+                mx.array(tokens),
+                max_tokens=args.max_tokens,
+                sampler=sampler,
+                verbose=True,  # Enable verbose mode to see token-by-token generation
+                stop_tokens=[trainer.tokenizer.EOS_TOKEN],
+                logits_processors=logits_processors
+        )
+        
+        # If temperature sampling fails or produces % characters, try greedy decoding
+        output_text = trainer.tokenizer.detokenize(greedy_output)
+        if all(c == '%' for c in output_text):
+            print("Temperature sampling produced only % characters, trying greedy decoding...")
+            # Try with a simple greedy sampler
+            def greedy_sampler(logprobs):
+                token = mx.argmax(logprobs, axis=-1)
+                print(f"Sampler selected token: {token.item()}")
+                return token
+                
+            greedy_output, greedy_score = generate_lite(
+                    trainer.model,
+                    mx.array(tokens),
+                    max_tokens=args.max_tokens,
+                    sampler=greedy_sampler,
+                    verbose=True,
+                    stop_tokens=[trainer.tokenizer.EOS_TOKEN],
+                    logits_processors=logits_processors
+            )
+    except Exception as e:
+        print(f"Error during generation: {e}")
+        # Try fallback to beam search
+        print("Falling back to beam search...")
+        try:
+            greedy_output = beam_search(
+                trainer.model,
+                mx.array(tokens),
+                max_tokens=args.max_tokens,
+                verbose=True,
+                n_beams=4,
+                stop_tokens=[trainer.tokenizer.EOS_TOKEN]
+            )
+            greedy_score = 0.0  # No score for beam search
+        except Exception as e2:
+            print(f"Beam search also failed: {e2}")
+            greedy_output = []
+            greedy_score = 0.0
     # Make sure we have output to display
     if len(greedy_output) > 0:
-        print(f"Greedy Output: {trainer.tokenizer.detokenize(greedy_output)}")
-        # Print the raw tokens for debugging
+        output_text = trainer.tokenizer.detokenize(greedy_output)
         print(f"Generated tokens: {greedy_output.tolist()}")
+        
+        if all(c == '%' for c in output_text):
+            print("WARNING: Model is only generating '%' characters, which suggests a mismatch between the model and tokenizer")
+            print("Try using a different checkpoint or model configuration")
+        else:
+            print(f"Generated Output: {output_text}")
+            print(f"Generation Score: {greedy_score:.3f}")
     else:
         print("No tokens were generated. Check if the sampler is working correctly.")
         
     # Print the model and tokenizer info for debugging
     print(f"Model type: {type(trainer.model).__name__}")
     print(f"Tokenizer vocabulary size: {trainer.tokenizer.vocab_size}")
+    print(f"Model vocabulary size: {trainer.model.vocab_size}")
     
     # Print result
     #print(f"Greedy (Score: {score:.3f}): {trainer.tokenizer.detokenize(output)}")
