@@ -142,28 +142,28 @@ def main():
                         logits = output
                     
                     next_token_logits = logits[-1, :]
-                        
-                        # Apply temperature sampling
-                        if args.temperature > 0:
-                            # Apply temperature
-                            next_token_logits = next_token_logits / args.temperature
-                            # Convert to probabilities
-                            probs = mx.softmax(next_token_logits, axis=-1)
-                            # Sample from the distribution
-                            next_token = mx.random.categorical(probs.reshape(1, -1))
-                        else:
-                            # Greedy decoding
-                            next_token = mx.argmax(next_token_logits)
-                        
-                        # Convert to scalar for printing
-                        next_token_id = int(next_token.item())
-                        print(f"Generated token ID {i+1}: {next_token_id}")
-                        
-                        # Add to our list of generated tokens
-                        generated_tokens.append(next_token_id)
-                        
-                        # Append to the sequence
-                        all_tokens = mx.concatenate([all_tokens, next_token.reshape(1)])
+                    
+                    # Apply temperature sampling
+                    if args.temperature > 0:
+                        # Apply temperature
+                        next_token_logits = next_token_logits / args.temperature
+                        # Convert to probabilities
+                        probs = mx.softmax(next_token_logits, axis=-1)
+                        # Sample from the distribution
+                        next_token = mx.random.categorical(probs.reshape(1, -1))
+                    else:
+                        # Greedy decoding
+                        next_token = mx.argmax(next_token_logits)
+                    
+                    # Convert to scalar for printing
+                    next_token_id = int(next_token.item())
+                    print(f"Generated token ID {i+1}: {next_token_id}")
+                    
+                    # Add to our list of generated tokens
+                    generated_tokens.append(next_token_id)
+                    
+                    # Append to the sequence
+                    all_tokens = mx.concatenate([all_tokens, next_token.reshape(1)])
                 except Exception as e:
                     print(f"Error generating token {i+1}: {e}")
                     import traceback
