@@ -23,6 +23,8 @@ def main():
                        help='Repetition penalty factor')
     parser.add_argument('--repetition-context-size', type=int, default=20,
                        help='Context size for repetition penalty')
+    parser.add_argument('--strict-loading', action='store_true',
+                       help='Use strict parameter loading (default: False)')
     args = parser.parse_args()
 
     # Load run configuration and initialize trainer
@@ -40,7 +42,8 @@ def main():
             raise ValueError(f"Final checkpoint not found for run: {args.run}")
     checkpoint_path = str(checkpoint_path)
     
-    trainer.model.load_weights(checkpoint_path)
+    # Load weights with strict parameter based on command line argument
+    trainer.model.load_weights(checkpoint_path, strict=args.strict_loading)
     
     # Prepare input
     tokens = [trainer.tokenizer.BOS_TOKEN] + trainer.tokenizer.tokenize(args.prompt)
