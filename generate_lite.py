@@ -147,19 +147,41 @@ def generate_step(
                 # This is likely a dimension mismatch in the attention mechanism
                 # Try to fix the model dimensions
                 if hasattr(model, 'model') and hasattr(model.model, 'layers') and len(model.model.layers) > 0:
-                    for layer in model.model.layers:
-                        if hasattr(layer, 'self_attn'):
-                            # Get the embedding dimension
-                            if hasattr(layer, 'input_layernorm') and hasattr(layer.input_layernorm, 'weight'):
-                                hidden_size = layer.input_layernorm.weight.shape[0]
-                                # Adjust n_heads to be a divisor of hidden_size
-                                for n_heads in [12, 16, 8, 4]:
-                                    if hidden_size % n_heads == 0:
-                                        head_dim = hidden_size // n_heads
-                                        print(f"Adjusting attention: hidden_size={hidden_size}, n_heads={n_heads}, head_dim={head_dim}")
-                                        layer.self_attn.n_heads = n_heads
-                                        layer.self_attn.head_dim = head_dim
-                                        break
+                    # First, analyze the error message to extract the actual dimensions
+                    import re
+                    match = re.search(r'size (\d+) into shape \(1,(\d+),(\d+),(\d+)\)', str(e))
+                    if match:
+                        array_size = int(match.group(1))
+                        seq_len = int(match.group(2))
+                        n_heads = int(match.group(3))
+                        head_dim = int(match.group(4))
+                        
+                        # Calculate what the head_dim should be based on the array size
+                        # array_size = seq_len * n_heads * head_dim
+                        correct_head_dim = array_size // (seq_len * n_heads)
+                        print(f"Error analysis: array_size={array_size}, seq_len={seq_len}, n_heads={n_heads}")
+                        print(f"Calculated correct head_dim={correct_head_dim}")
+                        
+                        # Apply the fix to all layers
+                        for layer in model.model.layers:
+                            if hasattr(layer, 'self_attn'):
+                                layer.self_attn.head_dim = correct_head_dim
+                                print(f"Fixed layer: set head_dim={correct_head_dim}")
+                    else:
+                        # Fallback to the original approach if we can't parse the error
+                        for layer in model.model.layers:
+                            if hasattr(layer, 'self_attn'):
+                                # Get the embedding dimension
+                                if hasattr(layer, 'input_layernorm') and hasattr(layer.input_layernorm, 'weight'):
+                                    hidden_size = layer.input_layernorm.weight.shape[0]
+                                    # Adjust n_heads to be a divisor of hidden_size
+                                    for n_heads in [12, 16, 8, 4]:
+                                        if hidden_size % n_heads == 0:
+                                            head_dim = hidden_size // n_heads
+                                            print(f"Adjusting attention: hidden_size={hidden_size}, n_heads={n_heads}, head_dim={head_dim}")
+                                            layer.self_attn.n_heads = n_heads
+                                            layer.self_attn.head_dim = head_dim
+                                            break
                 
                 # Try again with adjusted dimensions
                 logits = model(y_tok[None], cache=prompt_cache)

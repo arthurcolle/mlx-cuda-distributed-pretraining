@@ -173,6 +173,61 @@ def main():
             
             return all_tokens, mx.array(generated_tokens) if generated_tokens else mx.array([])
         
+        # Monkey patch the attention mechanism to handle dimension mismatches
+        def monkey_patch_attention():
+            try:
+                # Find the attention module
+                if hasattr(trainer.model, 'model') and hasattr(trainer.model.model, 'layers') and len(trainer.model.model.layers) > 0:
+                    for layer in trainer.model.model.layers:
+                        if hasattr(layer, 'self_attn'):
+                            # Store the original __call__ method
+                            original_call = layer.self_attn.__call__
+                        
+                            # Define a new __call__ method that handles dimension issues
+                            def patched_call(self, x, mask=None, cache=None):
+                                try:
+                                    return original_call(self, x, mask, cache)
+                                except ValueError as e:
+                                    if "reshape" in str(e):
+                                        print(f"Handling reshape error in attention: {e}")
+                                        # Get the query, key, value projections
+                                        xqkv = self.wqkv(x)
+                                        # Extract the actual dimensions
+                                        B, L, D = x.shape
+                                        total_dim = xqkv.shape[-1]
+                                    
+                                        # Calculate the correct head_dim based on the total dimension
+                                        if hasattr(self, 'n_kv_heads') and self.n_kv_heads != self.n_heads:
+                                            # For grouped query attention
+                                            qkv_dim = total_dim
+                                            q_dim = self.n_heads * self.head_dim
+                                            kv_dim = (total_dim - q_dim) // 2
+                                            # Adjust head_dim to make it work
+                                            self.head_dim = q_dim // self.n_heads
+                                            print(f"Adjusted head_dim to {self.head_dim} for grouped query attention")
+                                        else:
+                                            # For standard attention
+                                            self.head_dim = total_dim // (3 * self.n_heads)
+                                            print(f"Adjusted head_dim to {self.head_dim} for standard attention")
+                                    
+                                        # Try again with the adjusted dimensions
+                                        return original_call(self, x, mask, cache)
+                                    else:
+                                        raise
+                        
+                            # Replace the __call__ method
+                            layer.self_attn.__call__ = lambda *args, **kwargs: patched_call(layer.self_attn, *args, **kwargs)
+                            print(f"Monkey patched attention mechanism in layer")
+                return True
+            except Exception as e:
+                print(f"Failed to monkey patch attention: {e}")
+                return False
+    
+        # Apply the monkey patch
+        patched = monkey_patch_attention()
+        if patched and args.debug:
+            print("Successfully applied attention monkey patch")
+    
         # Try direct generation first
         try:
             # Print model configuration for debugging
@@ -189,6 +244,25 @@ def main():
                         attn = layer.self_attn
                         print(f"Attention config: heads={getattr(attn, 'n_heads', 'unknown')}, "
                               f"head_dim={getattr(attn, 'head_dim', 'unknown')}")
+                    
+                        # Print more detailed attention info
+                        if hasattr(attn, 'wqkv') and hasattr(attn.wqkv, 'weight'):
+                            wqkv_shape = attn.wqkv.weight.shape
+                            print(f"  wqkv weight shape: {wqkv_shape}")
+                        
+                            # Calculate expected dimensions
+                            if len(wqkv_shape) == 2:
+                                hidden_size = wqkv_shape[1]
+                                output_size = wqkv_shape[0]
+                                print(f"  hidden_size (input): {hidden_size}")
+                                print(f"  output_size: {output_size}")
+                            
+                                # Check if dimensions make sense
+                                if hasattr(attn, 'n_heads') and hasattr(attn, 'head_dim'):
+                                    expected_output = 3 * attn.n_heads * attn.head_dim
+                                    if expected_output != output_size:
+                                        print(f"  WARNING: Expected output size {expected_output} != actual {output_size}")
+                                        print(f"  Suggested head_dim: {output_size // (3 * attn.n_heads)}")
         
             all_tokens, greedy_output = direct_generate(
                 trainer.model,
@@ -203,19 +277,41 @@ def main():
             
                 # Try to fix the model dimensions
                 if hasattr(trainer.model, 'model') and hasattr(trainer.model.model, 'layers') and len(trainer.model.model.layers) > 0:
-                    for layer in trainer.model.model.layers:
-                        if hasattr(layer, 'self_attn'):
-                            # Get the embedding dimension
-                            if hasattr(layer, 'input_layernorm') and hasattr(layer.input_layernorm, 'weight'):
-                                hidden_size = layer.input_layernorm.weight.shape[0]
-                                # Adjust n_heads to be a divisor of hidden_size
-                                for n_heads in [12, 16, 8, 4]:
-                                    if hidden_size % n_heads == 0:
-                                        head_dim = hidden_size // n_heads
-                                        print(f"Adjusting attention: hidden_size={hidden_size}, n_heads={n_heads}, head_dim={head_dim}")
-                                        layer.self_attn.n_heads = n_heads
-                                        layer.self_attn.head_dim = head_dim
-                                        break
+                    # First, analyze the error message to extract the actual dimensions
+                    import re
+                    match = re.search(r'size (\d+) into shape \(1,(\d+),(\d+),(\d+)\)', str(e))
+                    if match:
+                        array_size = int(match.group(1))
+                        seq_len = int(match.group(2))
+                        n_heads = int(match.group(3))
+                        head_dim = int(match.group(4))
+                        
+                        # Calculate what the head_dim should be based on the array size
+                        # array_size = seq_len * n_heads * head_dim
+                        correct_head_dim = array_size // (seq_len * n_heads)
+                        print(f"Error analysis: array_size={array_size}, seq_len={seq_len}, n_heads={n_heads}")
+                        print(f"Calculated correct head_dim={correct_head_dim}")
+                        
+                        # Apply the fix to all layers
+                        for layer in trainer.model.model.layers:
+                            if hasattr(layer, 'self_attn'):
+                                layer.self_attn.head_dim = correct_head_dim
+                                print(f"Fixed layer: set head_dim={correct_head_dim}")
+                    else:
+                        # Fallback to the original approach if we can't parse the error
+                        for layer in trainer.model.model.layers:
+                            if hasattr(layer, 'self_attn'):
+                                # Get the embedding dimension
+                                if hasattr(layer, 'input_layernorm') and hasattr(layer.input_layernorm, 'weight'):
+                                    hidden_size = layer.input_layernorm.weight.shape[0]
+                                    # Adjust n_heads to be a divisor of hidden_size
+                                    for n_heads in [12, 16, 8, 4]:
+                                        if hidden_size % n_heads == 0:
+                                            head_dim = hidden_size // n_heads
+                                            print(f"Adjusting attention: hidden_size={hidden_size}, n_heads={n_heads}, head_dim={head_dim}")
+                                            layer.self_attn.n_heads = n_heads
+                                            layer.self_attn.head_dim = head_dim
+                                            break
             
                 # Try again with adjusted dimensions
                 try:
