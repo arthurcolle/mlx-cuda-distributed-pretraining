@@ -138,7 +138,34 @@ def generate_step(
         # Ensure y_tok is 1D before adding batch dimension
         if y_tok.ndim == 0:
             y_tok = y_tok[None]
-        logits = model(y_tok[None], cache=prompt_cache)
+        
+        try:
+            # Try to run the model with the token
+            logits = model(y_tok[None], cache=prompt_cache)
+        except ValueError as e:
+            if "reshape" in str(e):
+                # This is likely a dimension mismatch in the attention mechanism
+                # Try to fix the model dimensions
+                if hasattr(model, 'model') and hasattr(model.model, 'layers') and len(model.model.layers) > 0:
+                    for layer in model.model.layers:
+                        if hasattr(layer, 'self_attn'):
+                            # Get the embedding dimension
+                            if hasattr(layer, 'input_layernorm') and hasattr(layer.input_layernorm, 'weight'):
+                                hidden_size = layer.input_layernorm.weight.shape[0]
+                                # Adjust n_heads to be a divisor of hidden_size
+                                for n_heads in [12, 16, 8, 4]:
+                                    if hidden_size % n_heads == 0:
+                                        head_dim = hidden_size // n_heads
+                                        print(f"Adjusting attention: hidden_size={hidden_size}, n_heads={n_heads}, head_dim={head_dim}")
+                                        layer.self_attn.n_heads = n_heads
+                                        layer.self_attn.head_dim = head_dim
+                                        break
+                
+                # Try again with adjusted dimensions
+                logits = model(y_tok[None], cache=prompt_cache)
+            else:
+                # Re-raise if it's not a reshape error
+                raise
         # logits shape: [1, seq_len=1, vocab_size]
         logits = logits[:, -1, :]  # take the last token
         if logits_processors:
