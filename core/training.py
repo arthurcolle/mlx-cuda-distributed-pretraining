@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 import yaml
 import mlx.optimizers as optim
-import mlx_optimizers as optim_x
-from mlx_optimizers import Shampoo, ShampooParams, AdamWEnhanced, SGDEnhanced, LionEnhanced
+import optimizers as optim_x
+from optimizers import Shampoo, ShampooParams, AdamWEnhanced, SGDEnhanced, LionEnhanced
 # Import schedule functions from local module to fix missing schedule functions
 from mlx_lm_utils import linear_schedule, cosine_decay, join_schedules
 import mlx.core as mx
@@ -20,7 +20,7 @@ import threading
 import queue
 # First try custom implementation with Flash Attention
 try:
-    from arch.llama import Model, ModelArgs
+    from models.llama import Model, ModelArgs
     USING_FLASH_ATTENTION = True
     print("Using custom Llama implementation with FlashAttention")
 except ImportError:
@@ -32,10 +32,10 @@ from mlx.utils import tree_flatten, tree_map, tree_unflatten
 import inspect
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Callable, Any, Optional, Union, Tuple
-from distributed_utils import DeviceManager, DistributedOptimizer
+from distributed.utils import DeviceManager, DistributedOptimizer
 # Import Modal-specific utilities if available
 try:
-    from modal_cuda_utils import ModalCudaManager, ModalDistributedOptimizer
+    from modal.modal_cuda_utils import ModalCudaManager, ModalDistributedOptimizer
     MODAL_AVAILABLE = True
 except ImportError:
     MODAL_AVAILABLE = False
@@ -570,7 +570,7 @@ class Trainer:
         
     def setup_model(self):
         model_cfg = self.config.model
-        arch_file = f"arch.{model_cfg.architecture}"
+        arch_file = f"models.{model_cfg.architecture}"
         mlx_lm_file = f"mlx_lm.models.{model_cfg.architecture}"
         Model = None
         ModelArgs = None
