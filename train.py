@@ -659,7 +659,7 @@ class Trainer:
             'rms_norm_eps': model_cfg.normalization['rms_norm_eps'],
             'vocab_size': self.tokenizer.VOCAB_SIZE,
             'head_dim': model_cfg.attention['head_dim'],
-            'max_position_embeddings': model_cfg.attention['max_position_embeddings'],
+            'max_position_embeddings': 256,  # Override with fixed context window size of 256
             'num_key_value_heads': model_cfg.attention['num_kv_heads'],
             'attention_bias': model_cfg.misc['attention_bias'],
             'mlp_bias': model_cfg.misc['mlp_bias'],
