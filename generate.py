@@ -59,7 +59,9 @@ def main():
     
     # Print model information
     print(f"Model architecture: {type(trainer.model).__name__}")
-    print(f"Model has {sum(p.size for _, p in trainer.model.parameters().items()):,} parameters")
+    # Count parameters correctly by getting the size of each parameter array
+    param_count = sum(p.size for p in trainer.model.parameters().values())
+    print(f"Model has {param_count:,} parameters")
     
     # Prepare input
     tokens = [trainer.tokenizer.BOS_TOKEN] + trainer.tokenizer.tokenize(args.prompt)
