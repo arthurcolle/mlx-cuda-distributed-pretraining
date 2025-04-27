@@ -121,7 +121,15 @@ def generate_step(
     elif len(prompt_cache) != len(model.layers):
         raise ValueError("Wrong number of layers in the prompt cache.")
 
-    sampler = sampler or (lambda logprobs: mx.argmax(logprobs, axis=-1))
+    # Default to argmax if no sampler is provided
+    if sampler is None:
+        def default_sampler(logprobs):
+            next_token = mx.argmax(logprobs, axis=-1)
+            # Ensure we return a scalar for consistency
+            if hasattr(next_token, 'item'):
+                return next_token.item()
+            return next_token
+        sampler = default_sampler
     logits_processors = logits_processors or []
     prompt_progress_callback = prompt_progress_callback or (lambda *_: None)
 

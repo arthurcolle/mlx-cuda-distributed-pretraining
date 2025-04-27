@@ -71,8 +71,11 @@ def main():
             stop_tokens=[trainer.tokenizer.EOS_TOKEN],
             logits_processors=logits_processors
     )
-    print(f"Greedy Output: {trainer.tokenizer.detokenize(greedy_output)}")
-    #print(f"Greedy Output (Score: {greedy_score:.3f}):     {trainer.tokenizer.detokenize(greedy_output)}")
+    # Make sure we have output to display
+    if len(greedy_output) > 0:
+        print(f"Greedy Output: {trainer.tokenizer.detokenize(greedy_output)}")
+    else:
+        print("No tokens were generated. Check if the sampler is working correctly.")
     
     # Print result
     #print(f"Greedy (Score: {score:.3f}): {trainer.tokenizer.detokenize(output)}")
