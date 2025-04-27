@@ -1,8 +1,8 @@
 import json
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Union, Callable
 import yaml
 import mlx.optimizers as optim
 import optimizers as optim_x
@@ -18,6 +18,9 @@ from datetime import datetime
 import os
 import threading
 import queue
+import logging
+import sys
+from contextlib import contextmanager
 # First try custom implementation with Flash Attention
 try:
     from models.llama import Model, ModelArgs
@@ -69,6 +72,19 @@ class TrainingConfig:
     scheduler: Dict[str, Any]
     optimization: Dict[str, Any]
     epochs: Optional[int] = None
+    early_stopping: Dict[str, Any] = field(default_factory=lambda: {
+        "enabled": False,
+        "patience": 3,
+        "min_delta": 0.001,
+        "metric": "val_loss",
+        "mode": "min"
+    })
+    lr_finder: Dict[str, Any] = field(default_factory=lambda: {
+        "enabled": False,
+        "min_lr": 1e-7,
+        "max_lr": 1.0,
+        "num_steps": 100
+    })
 
 @dataclass
 class LoggingConfig:
@@ -77,6 +93,15 @@ class LoggingConfig:
     steps: Dict[str, int]
     metrics: Dict[str, bool]
     # Default to 0 (no validation) if not specified
+    tensorboard: bool = False
+    wandb: bool = False
+    wandb_project: Optional[str] = None
+    wandb_entity: Optional[str] = None
+    log_memory_usage: bool = False
+    log_gradient_norm: bool = False
+    log_parameter_norm: bool = False
+    log_samples: bool = False
+    log_samples_count: int = 3
 
 @dataclass
 class SystemConfig:
@@ -86,6 +111,13 @@ class SystemConfig:
     devices: Optional[List[str]] = None
     cuda_devices: Optional[List[int]] = None
     memory_limit: Optional[int] = None
+    mixed_precision: bool = False
+    precision: str = "float16"  # Options: float16, bfloat16
+    gradient_checkpointing: bool = False
+    gradient_checkpointing_ratio: float = 0.5  # Fraction of layers to checkpoint
+    model_parallel: bool = False
+    model_parallel_size: int = 1
+    zero_optimization_level: int = 0  # 0: Disabled, 1: Optimizer states, 2: Gradients, 3: Parameters
 
 @dataclass
 class ResumeConfig:
@@ -161,10 +193,138 @@ class CheckpointManager:
         state_path = f"{checkpoint_path}_state.json"
         return model_path, optimizer_path, state_path
 
+class Logger:
+    """Advanced logging utility for training."""
+    
+    def __init__(self, config: LoggingConfig, run_dir: Path):
+        self.config = config
+        self.run_dir = run_dir
+        self.log_file = run_dir / 'log.txt'
+        self.tb_writer = None
+        self.wandb_run = None
+        
+        # Configure logging
+        self.logger = logging.getLogger("trainer")
+        self.logger.setLevel(logging.INFO)
+        
+        # Console handler
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(console_formatter)
+        
+        # File handler
+        file_handler = logging.FileHandler(self.log_file)
+        file_handler.setLevel(logging.INFO)
+        file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(file_formatter)
+        
+        # Add handlers
+        self.logger.addHandler(console_handler)
+        self.logger.addHandler(file_handler)
+        
+        # Initialize TensorBoard if enabled
+        if config.tensorboard:
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+                self.tb_writer = SummaryWriter(log_dir=str(run_dir / 'tensorboard'))
+                self.logger.info("TensorBoard logging enabled")
+            except ImportError:
+                self.logger.warning("TensorBoard requested but torch not installed. Disabling TensorBoard logging.")
+                self.tb_writer = None
+        
+        # Initialize Weights & Biases if enabled
+        if config.wandb:
+            try:
+                import wandb
+                self.wandb_run = wandb.init(
+                    project=config.wandb_project,
+                    entity=config.wandb_entity,
+                    name=run_dir.name,
+                    dir=str(run_dir / 'wandb'),
+                    config={
+                        "log_dir": config.log_dir,
+                        "steps": config.steps,
+                        "metrics": config.metrics
+                    }
+                )
+                self.logger.info("Weights & Biases logging enabled")
+            except ImportError:
+                self.logger.warning("Weights & Biases requested but wandb not installed. Disabling W&B logging.")
+                self.wandb_run = None
+    
+    def log_metrics(self, step: int, metrics: Dict[str, Any]):
+        """Log metrics to all configured logging destinations."""
+        # Log to console/file via logger
+        metrics_str = " | ".join([f"{k}={v}" for k, v in metrics.items()])
+        self.logger.info(f"Step {step}: {metrics_str}")
+        
+        # Log to TensorBoard if enabled
+        if self.tb_writer is not None:
+            for k, v in metrics.items():
+                if isinstance(v, (int, float)):
+                    self.tb_writer.add_scalar(k, v, step)
+        
+        # Log to Weights & Biases if enabled
+        if self.wandb_run is not None:
+            self.wandb_run.log(metrics, step=step)
+    
+    def log_model_summary(self, model):
+        """Log model architecture summary."""
+        # Count parameters
+        total_params = sum(v.size for _, v in tree_flatten(model.parameters())) / 10**6
+        trainable_params = sum(v.size for _, v in tree_flatten(model.trainable_parameters())) / 10**6
+        
+        self.logger.info(f"Model summary:")
+        self.logger.info(f"  Total parameters: {total_params:.2f}M")
+        self.logger.info(f"  Trainable parameters: {trainable_params:.2f}M")
+        
+        # Log to W&B if enabled
+        if self.wandb_run is not None:
+            self.wandb_run.summary["total_parameters"] = total_params
+            self.wandb_run.summary["trainable_parameters"] = trainable_params
+    
+    def log_text_samples(self, step: int, samples: List[str], prefix: str = "generation"):
+        """Log text samples to TensorBoard and W&B."""
+        if self.tb_writer is not None:
+            for i, sample in enumerate(samples):
+                self.tb_writer.add_text(f"{prefix}_{i}", sample, step)
+        
+        if self.wandb_run is not None:
+            self.wandb_run.log({f"{prefix}_{i}": sample for i, sample in enumerate(samples)})
+    
+    def log_memory_usage(self, step: int):
+        """Log memory usage statistics."""
+        try:
+            import psutil
+            process = psutil.Process(os.getpid())
+            memory_info = process.memory_info()
+            memory_usage = memory_info.rss / (1024 * 1024)  # Convert to MB
+            
+            self.logger.info(f"Memory usage at step {step}: {memory_usage:.2f} MB")
+            
+            if self.tb_writer is not None:
+                self.tb_writer.add_scalar("system/memory_usage_mb", memory_usage, step)
+            
+            if self.wandb_run is not None:
+                self.wandb_run.log({"system/memory_usage_mb": memory_usage}, step=step)
+        except ImportError:
+            self.logger.warning("psutil not installed, cannot log memory usage")
+    
+    def close(self):
+        """Close all logging resources."""
+        if self.tb_writer is not None:
+            self.tb_writer.close()
+        
+        if self.wandb_run is not None:
+            self.wandb_run.finish()
+
+
 class TokenizerManager:
     def __init__(self, config: DataConfig, run_dir: Optional[Path] = None):
         self.config = config
         self.external_tokenizer = None
+        self.logger = logging.getLogger("tokenizer")
         
         # Check if an external tokenizer path is provided
         if config.tokenizer_path is not None:
@@ -371,10 +531,230 @@ class DataManager:
         """Get the number of validation batches."""
         return len(self.val_batch_idx) if self.has_validation_data else 0
 
+class MixedPrecisionManager:
+    """Manages mixed precision training."""
+    
+    def __init__(self, enabled: bool = False, precision: str = "float16"):
+        self.enabled = enabled
+        self.precision = precision
+        self.dtype = mx.float16 if precision == "float16" else mx.bfloat16
+        self.logger = logging.getLogger("mixed_precision")
+        
+        if enabled:
+            self.logger.info(f"Mixed precision training enabled with {precision}")
+        
+    @contextmanager
+    def cast_forward(self, model):
+        """Context manager for forward pass in mixed precision."""
+        if not self.enabled:
+            yield model
+            return
+            
+        # Store original parameters
+        original_params = dict(tree_flatten(model.parameters()))
+        
+        try:
+            # Cast parameters to lower precision for forward pass
+            casted_params = tree_map(lambda x: x.astype(self.dtype), original_params)
+            model.update(casted_params)
+            yield model
+        finally:
+            # Restore original parameters
+            model.update(original_params)
+    
+    def cast_gradients(self, gradients):
+        """Cast gradients back to float32 for optimizer update."""
+        if not self.enabled:
+            return gradients
+        
+        return tree_map(lambda x: x.astype(mx.float32), gradients)
+
+
+class GradientCheckpointer:
+    """Implements gradient checkpointing for memory efficiency."""
+    
+    def __init__(self, enabled: bool = False, ratio: float = 0.5):
+        self.enabled = enabled
+        self.ratio = ratio
+        self.logger = logging.getLogger("gradient_checkpointing")
+        
+        if enabled:
+            self.logger.info(f"Gradient checkpointing enabled with ratio {ratio}")
+    
+    def apply(self, model):
+        """Apply gradient checkpointing to transformer layers."""
+        if not self.enabled:
+            return model
+            
+        # Find transformer layers
+        if hasattr(model, 'model') and hasattr(model.model, 'layers'):
+            layers = model.model.layers
+            num_layers = len(layers)
+            
+            # Determine which layers to checkpoint
+            checkpoint_every = max(1, int(1 / self.ratio))
+            layers_to_checkpoint = [i for i in range(num_layers) if i % checkpoint_every != 0]
+            
+            self.logger.info(f"Applying gradient checkpointing to {len(layers_to_checkpoint)}/{num_layers} layers")
+            
+            # Apply checkpointing
+            for i in layers_to_checkpoint:
+                if hasattr(layers[i], 'enable_checkpointing'):
+                    layers[i].enable_checkpointing()
+                else:
+                    self.logger.warning(f"Layer {i} does not support checkpointing")
+        
+        return model
+
+
+class EarlyStoppingMonitor:
+    """Monitors validation metrics for early stopping."""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.enabled = config.get("enabled", False)
+        self.patience = config.get("patience", 3)
+        self.min_delta = config.get("min_delta", 0.001)
+        self.metric = config.get("metric", "val_loss")
+        self.mode = config.get("mode", "min")
+        
+        self.best_value = float('inf') if self.mode == "min" else float('-inf')
+        self.counter = 0
+        self.logger = logging.getLogger("early_stopping")
+        
+        if self.enabled:
+            self.logger.info(f"Early stopping enabled with patience={self.patience}, "
+                            f"min_delta={self.min_delta}, metric={self.metric}, mode={self.mode}")
+    
+    def update(self, metrics: Dict[str, float]) -> bool:
+        """Update early stopping state with new metrics.
+        
+        Returns:
+            bool: True if training should stop, False otherwise
+        """
+        if not self.enabled or self.metric not in metrics:
+            return False
+            
+        current_value = metrics[self.metric]
+        
+        if self.mode == "min":
+            improved = self.best_value - current_value > self.min_delta
+        else:
+            improved = current_value - self.best_value > self.min_delta
+            
+        if improved:
+            self.best_value = current_value
+            self.counter = 0
+            self.logger.info(f"Early stopping: {self.metric} improved to {current_value:.6f}")
+            return False
+        else:
+            self.counter += 1
+            self.logger.info(f"Early stopping: {self.metric} did not improve, counter: {self.counter}/{self.patience}")
+            
+            if self.counter >= self.patience:
+                self.logger.info(f"Early stopping triggered after {self.counter} iterations without improvement")
+                return True
+                
+        return False
+
+
+class LearningRateFinder:
+    """Implements learning rate finder to determine optimal learning rate."""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.enabled = config.get("enabled", False)
+        self.min_lr = config.get("min_lr", 1e-7)
+        self.max_lr = config.get("max_lr", 1.0)
+        self.num_steps = config.get("num_steps", 100)
+        self.logger = logging.getLogger("lr_finder")
+        
+        if self.enabled:
+            self.logger.info(f"Learning rate finder enabled with range {self.min_lr} to {self.max_lr}")
+            
+        self.lr_values = []
+        self.loss_values = []
+    
+    def get_lr_schedule(self):
+        """Create exponential learning rate schedule for the finder."""
+        if not self.enabled:
+            return None
+            
+        factor = (self.max_lr / self.min_lr) ** (1 / self.num_steps)
+        
+        def schedule(step):
+            return self.min_lr * (factor ** step)
+            
+        return schedule
+    
+    def record(self, step: int, lr: float, loss: float):
+        """Record learning rate and loss values."""
+        if not self.enabled:
+            return
+            
+        self.lr_values.append(lr)
+        self.loss_values.append(loss)
+    
+    def plot_results(self, save_path: Path):
+        """Plot learning rate finder results."""
+        if not self.enabled or not self.lr_values:
+            return
+            
+        try:
+            import matplotlib.pyplot as plt
+            
+            plt.figure(figsize=(10, 6))
+            plt.plot(self.lr_values, self.loss_values)
+            plt.xscale('log')
+            plt.xlabel('Learning Rate')
+            plt.ylabel('Loss')
+            plt.title('Learning Rate Finder Results')
+            plt.grid(True)
+            plt.savefig(save_path / 'lr_finder_results.png')
+            
+            # Find the optimal learning rate (point of steepest descent)
+            min_gradient_idx = None
+            min_gradient = 0
+            
+            for i in range(1, len(self.lr_values) - 1):
+                gradient = (self.loss_values[i+1] - self.loss_values[i-1]) / (self.lr_values[i+1] - self.lr_values[i-1])
+                if min_gradient_idx is None or gradient < min_gradient:
+                    min_gradient = gradient
+                    min_gradient_idx = i
+            
+            if min_gradient_idx is not None:
+                optimal_lr = self.lr_values[min_gradient_idx]
+                self.logger.info(f"Suggested optimal learning rate: {optimal_lr:.2e}")
+                
+                # Mark the optimal point on the plot
+                plt.figure(figsize=(10, 6))
+                plt.plot(self.lr_values, self.loss_values)
+                plt.scatter([optimal_lr], [self.loss_values[min_gradient_idx]], color='red', s=100, zorder=5)
+                plt.xscale('log')
+                plt.xlabel('Learning Rate')
+                plt.ylabel('Loss')
+                plt.title(f'Learning Rate Finder Results (Suggested LR: {optimal_lr:.2e})')
+                plt.grid(True)
+                plt.savefig(save_path / 'lr_finder_results_with_suggestion.png')
+                
+                # Save the results to a CSV file
+                import csv
+                with open(save_path / 'lr_finder_results.csv', 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['learning_rate', 'loss'])
+                    for lr, loss in zip(self.lr_values, self.loss_values):
+                        writer.writerow([lr, loss])
+                
+                return optimal_lr
+                
+        except ImportError:
+            self.logger.warning("matplotlib not installed, cannot plot learning rate finder results")
+            return None
+
+
 class OptimizationManager:
     def __init__(self, config: TrainingConfig, num_training_steps: int):
         self.config = config
         self.num_training_steps = num_training_steps
+        self.logger = logging.getLogger("optimization")
         
     def create_scheduler(self) -> Any:
         cfg = self.config.scheduler
@@ -503,6 +883,14 @@ class Trainer:
         self.total_tokens = 0
         self.start_step = 0
         
+        # Configure logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[logging.StreamHandler(sys.stdout)]
+        )
+        self.logger = logging.getLogger("trainer")
+        
         # Validate unique run name before proceeding
         if for_training and not self.config.overwrite and not (self.config.resume and self.config.resume.checkpoint):
             CheckpointManager.validate_unique_name(self.config.name)
@@ -512,21 +900,45 @@ class Trainer:
         # Create run directory early so we can copy tokenizer to it
         if for_training:
             self.run_dir, self.log_file, self.checkpoint_dir = CheckpointManager.setup_run_directory(self.config.name)
+            # Initialize advanced logger
+            self.logger_manager = Logger(self.config.logging, self.run_dir)
         else:
             self.run_dir = None
+            self.logger_manager = None
             
         # Initialize tokenizer with run directory if available
         self.tokenizer = TokenizerManager(self.config.data, self.run_dir)
+        
+        # Initialize mixed precision manager
+        self.mixed_precision = MixedPrecisionManager(
+            enabled=self.config.system.mixed_precision,
+            precision=self.config.system.precision
+        )
+        
+        # Initialize gradient checkpointing
+        self.gradient_checkpointer = GradientCheckpointer(
+            enabled=self.config.system.gradient_checkpointing,
+            ratio=self.config.system.gradient_checkpointing_ratio
+        )
+        
+        # Initialize early stopping
+        self.early_stopping = EarlyStoppingMonitor(self.config.training.early_stopping)
+        
+        # Initialize learning rate finder
+        self.lr_finder = LearningRateFinder(self.config.training.lr_finder)
         
         self.setup_model()
         if for_training:
             self.data_manager = DataManager(self.config.data, self.tokenizer, batch_size=self.config.training.hyperparameters['batch_size'])
             self.setup_training()
-            self.setup_logging()
             
             # Initialize validation metrics tracking
             self.validation_steps = self.config.logging.steps.get('validation_interval', 0)
             self.validation_losses = []
+            
+            # Log model summary
+            if self.logger_manager:
+                self.logger_manager.log_model_summary(self.model)
     
     def setup_system(self):
         # Set random seeds
@@ -628,21 +1040,34 @@ class Trainer:
         valid_args = filter_valid_args(ModelArgs, all_args)
         args = ModelArgs(**valid_args)
 
-        # Print model configuration for debugging
-        print(f"Model configuration:")
-        print(f"  hidden_size: {args.hidden_size}")
-        print(f"  num_attention_heads: {args.num_attention_heads}")
-        print(f"  head_dim: {args.head_dim}")
-        print(f"  hidden_size / num_heads = {args.hidden_size / args.num_attention_heads}")
+        # Log model configuration
+        self.logger.info(f"Model configuration:")
+        self.logger.info(f"  Architecture: {model_cfg.architecture}")
+        self.logger.info(f"  Hidden size: {args.hidden_size}")
+        self.logger.info(f"  Num attention heads: {args.num_attention_heads}")
+        self.logger.info(f"  Head dim: {args.head_dim}")
+        self.logger.info(f"  Num layers: {args.num_hidden_layers}")
+        self.logger.info(f"  Intermediate size: {args.intermediate_size}")
+        self.logger.info(f"  Vocab size: {args.vocab_size}")
         
+        # Create model
         self.model = Model(args)
 
+        # Apply gradient checkpointing if enabled
+        self.model = self.gradient_checkpointer.apply(self.model)
+
+        # Load pre-trained weights if specified
         if self.config.data.weight_path is not None:
-            print(f"Loading weights from {self.config.data.weight_path}")
+            self.logger.info(f"Loading weights from {self.config.data.weight_path}")
             self.model.load_weights(self.config.data.weight_path, strict=False)
+            
         # Log model size
         p = sum(v.size for _, v in tree_flatten(self.model.trainable_parameters())) / 10**6
-        print(f"Model has {p:.2f}M parameters")
+        self.logger.info(f"Model has {p:.2f}M parameters")
+        
+        # Initialize model parallelism if enabled
+        if self.config.system.model_parallel and self.config.system.model_parallel_size > 1:
+            self.setup_model_parallelism()
         
     def setup_training(self):
         # Calculate number of training steps
@@ -729,31 +1154,52 @@ class Trainer:
             with open(self.config_path, 'r') as config_file:
                 f.write(config_file.read())
     
+    def setup_model_parallelism(self):
+        """Set up model parallelism across multiple devices."""
+        if not self.distributed or not self.device_mgr:
+            self.logger.warning("Model parallelism requested but distributed training not enabled")
+            return
+            
+        self.logger.info(f"Setting up model parallelism with {self.config.system.model_parallel_size} partitions")
+        
+        # This is a placeholder for actual model parallelism implementation
+        # In a real implementation, we would:
+        # 1. Partition the model across devices
+        # 2. Set up communication between partitions
+        # 3. Modify forward/backward passes to handle partitioned execution
+        
+        # For now, just log that it would be implemented
+        self.logger.info("Model parallelism support is a placeholder - not fully implemented yet")
+
     def compute_loss(self, model, inputs: mx.array, targets: mx.array) -> Tuple[mx.array, int]:
-        # Print input shapes for debugging
-        print(f"Input shape: {inputs.shape}, Target shape: {targets.shape}")
+        # Log input shapes at debug level
+        self.logger.debug(f"Input shape: {inputs.shape}, Target shape: {targets.shape}")
         
         # Standard loss computation for non-distributed case
         if not self.distributed or not self.device_mgr:
             # Check if the batch is too large for the model's context window
             max_ctx = self.config.model.attention.get('max_position_embeddings', 2048)
             if inputs.shape[1] > max_ctx:
-                print(f"WARNING: Input sequence length {inputs.shape[1]} exceeds model's max context {max_ctx}")
+                self.logger.warning(f"Input sequence length {inputs.shape[1]} exceeds model's max context {max_ctx}")
                 # Truncate to avoid shape errors
                 inputs = inputs[:, :max_ctx]
                 targets = targets[:, :max_ctx]
-                print(f"Truncated to: Input shape: {inputs.shape}, Target shape: {targets.shape}")
+                self.logger.debug(f"Truncated to: Input shape: {inputs.shape}, Target shape: {targets.shape}")
             
-            logits = model(inputs)
-            logits = logits.astype(mx.float32)
-            loss = nn.losses.cross_entropy(logits, targets)
-            
-            # Mask padding tokens
-            pad_mask = (targets != self.tokenizer.PAD_TOKEN)
-            loss = loss * pad_mask
-            ntoks = pad_mask.sum()
-            
-            return loss.sum() / ntoks, ntoks
+            # Use mixed precision for forward pass if enabled
+            with self.mixed_precision.cast_forward(model) as mp_model:
+                logits = mp_model(inputs)
+                
+                # Always use float32 for loss computation
+                logits = logits.astype(mx.float32)
+                loss = nn.losses.cross_entropy(logits, targets)
+                
+                # Mask padding tokens
+                pad_mask = (targets != self.tokenizer.PAD_TOKEN)
+                loss = loss * pad_mask
+                ntoks = pad_mask.sum()
+                
+                return loss.sum() / ntoks, ntoks
         
         # Distributed loss computation for MLX-CUDA mixed workload
         # Here we could partition the batch across devices
@@ -994,6 +1440,65 @@ class Trainer:
         
         return self.start_step
 
+    def run_learning_rate_finder(self):
+        """Run the learning rate finder to determine optimal learning rate."""
+        if not self.lr_finder.enabled:
+            return None
+            
+        self.logger.info("Running learning rate finder...")
+        
+        # Create a temporary optimizer with the LR finder schedule
+        lr_schedule = self.lr_finder.get_lr_schedule()
+        temp_optimizer = self.create_optimizer_for_lr_finder(lr_schedule)
+        
+        # Create appropriate loss function
+        loss_value_and_grad = nn.value_and_grad(self.model, self.compute_loss)
+        
+        # Run for specified number of steps
+        for step in tqdm(range(self.lr_finder.num_steps), desc="LR Finder"):
+            # Generate batch
+            batch = self.data_manager.generate_batch(step)
+            
+            # Forward and backward pass
+            (loss, _), grad = loss_value_and_grad(
+                self.model, batch[:, :-1], batch[:, 1:]
+            )
+            
+            # Update model
+            temp_optimizer.update(self.model, grad)
+            mx.eval(loss)
+            
+            # Record learning rate and loss
+            current_lr = lr_schedule(step)
+            self.lr_finder.record(step, current_lr, float(loss.item()))
+            
+            # Clear cache if on GPU
+            if not self.distributed and self.config.system.device == "gpu":
+                try:
+                    mx.clear_cache()
+                except AttributeError:
+                    pass
+                    
+            # Stop if loss becomes NaN or too large
+            if np.isnan(loss.item()) or loss.item() > 4 * self.lr_finder.loss_values[0]:
+                self.logger.info(f"Stopping LR finder early at step {step} due to loss divergence")
+                break
+        
+        # Plot results and get suggested learning rate
+        optimal_lr = self.lr_finder.plot_results(self.run_dir)
+        
+        # Reset model to initial state (we don't want to keep the finder's updates)
+        if self.config.data.weight_path is not None:
+            self.logger.info("Reloading initial weights after LR finder")
+            self.model.load_weights(self.config.data.weight_path, strict=False)
+            
+        return optimal_lr
+        
+    def create_optimizer_for_lr_finder(self, lr_schedule):
+        """Create a simple optimizer for the learning rate finder."""
+        # Use SGD for LR finder as it's less adaptive than Adam-based optimizers
+        return optim.SGD(learning_rate=lr_schedule)
+
     def train(self):
         # Initialize variables
         total_tokens = self.total_tokens
@@ -1022,6 +1527,16 @@ class Trainer:
                 skip_initial_validation = True
         else:
             skip_initial_validation = False
+            
+        # Run learning rate finder if enabled
+        if self.lr_finder.enabled and not (self.config.resume and self.config.resume.checkpoint):
+            optimal_lr = self.run_learning_rate_finder()
+            if optimal_lr is not None:
+                # Update learning rate in config
+                self.logger.info(f"Setting learning rate to {optimal_lr:.2e} based on LR finder")
+                self.config.training.hyperparameters['learning_rate'] = optimal_lr
+                # Recreate optimizer with new learning rate
+                self.setup_training()
         
         # Create appropriate loss function based on distributed setting
         if not self.distributed or not self.device_mgr:
@@ -1079,6 +1594,9 @@ class Trainer:
             accumulated_tokens = 0
             accum_step = 0
             
+            # Track metrics for logging
+            metrics_to_log = {}
+            
             for step in progress_bar:
                 step += start_step
                 if step >= self.total_steps:
@@ -1090,10 +1608,20 @@ class Trainer:
                 # Generate batch
                 batch = self.data_manager.generate_batch(step)
                 
-                # Forward and backward pass
-                (loss, tokens), grad = loss_value_and_grad(
-                    self.model, batch[:, :-1], batch[:, 1:]
-                )
+                # Forward and backward pass with mixed precision
+                with self.mixed_precision.cast_forward(self.model):
+                    (loss, tokens), grad = loss_value_and_grad(
+                        self.model, batch[:, :-1], batch[:, 1:]
+                    )
+                
+                # Cast gradients back to float32 if using mixed precision
+                if self.mixed_precision.enabled:
+                    grad = self.mixed_precision.cast_gradients(grad)
+                
+                # Calculate gradient norm for logging if enabled
+                if self.config.logging.log_gradient_norm:
+                    grad_norm = mx.sqrt(sum(mx.sum(g**2) for g in tree_flatten(grad)[0]))
+                    metrics_to_log['grad_norm'] = float(grad_norm.item())
                 
                 # Gradient clipping if configured
                 if 'gradient_clip' in self.config.training.hyperparameters:
@@ -1135,6 +1663,11 @@ class Trainer:
                     self.optimizer.update(self.model, grad)
                     mx.eval(loss)
                 
+                # Calculate parameter norm for logging if enabled
+                if self.config.logging.log_parameter_norm:
+                    param_norm = mx.sqrt(sum(mx.sum(p**2) for p in tree_flatten(self.model.parameters())[0]))
+                    metrics_to_log['param_norm'] = float(param_norm.item())
+                
                 if not self.distributed and self.config.system.device == "gpu":
                     try:
                         mx.clear_cache()
@@ -1148,24 +1681,46 @@ class Trainer:
                     # Add to validation loss history
                     self.validation_losses.append((step + 1, val_loss))
                     
-                    # Log validation separately for clear visibility
-                    val_metrics = f"val_loss={val_loss:.3e} | val_ppl={np.exp(val_loss):.2f}"
-                    log_file.write(f"Step {step + 1} validation: {val_metrics}\n")
-                    log_file.flush()
+                    # Add validation metrics to logging
+                    metrics_to_log['val_loss'] = val_loss
+                    metrics_to_log['val_ppl'] = np.exp(val_loss)
+                    
+                    # Check early stopping
+                    if self.early_stopping.update({'val_loss': val_loss}):
+                        self.logger.info("Early stopping triggered, ending training")
+                        break
+                
+                # Log memory usage if enabled
+                if self.config.logging.log_memory_usage and step % self.config.logging.steps['logging_interval'] == 0:
+                    self.logger_manager.log_memory_usage(step)
+                
+                # Generate and log text samples if enabled
+                if self.config.logging.log_samples and step % self.config.logging.steps.get('sample_interval', 1000) == 0:
+                    self.generate_and_log_samples(step)
                 
                 # Logging
                 if step % self.config.logging.steps['logging_interval'] == 0:
-                    # Only include val_loss if it was just calculated
-                    current_val_loss = val_loss if self.validation_steps > 0 and (step + 1) % self.validation_steps == 0 else None
-                    metrics = self.log_metrics(step, loss, tokens, total_tokens, start_time, current_val_loss)
+                    # Add current metrics
+                    metrics_to_log.update({
+                        'loss': float(loss.item()),
+                        'ppl': float(np.exp(loss.item())),
+                        'lr': float(self.lr_schedule(step)),
+                        'tokens': int(tokens.item()),
+                        'total_tokens': int(total_tokens.item()),
+                        'tokens_per_sec': float(total_tokens / (time.time() - start_time))
+                    })
                     
-                    # Update progress bar
-                    progress_bar.set_description(metrics)
+                    # Log metrics using the logger manager
+                    if self.logger_manager:
+                        self.logger_manager.log_metrics(step, metrics_to_log)
                     
-                    # Write to log file
-                    log_message = f"Step {step}: {metrics}\n"
-                    log_file.write(log_message)
-                    log_file.flush()
+                    # Format metrics for progress bar
+                    metrics_str = " | ".join([f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" 
+                                             for k, v in metrics_to_log.items()])
+                    progress_bar.set_description(metrics_str)
+                    
+                    # Clear metrics for next logging interval
+                    metrics_to_log = {}
                 
                 # Save checkpoint
                 if (1 + step) % self.config.logging.steps['checkpoint_interval'] == 0:
@@ -1208,6 +1763,95 @@ class Trainer:
                 log_file.write(f"Final validation loss: {final_val_loss:.4e} (ppl={np.exp(final_val_loss):.2f})\n")
             log_file.write(f"Total tokens processed: {total_tokens/1000:.2f}K\n")
 
+    def generate_and_log_samples(self, step: int):
+        """Generate and log text samples during training."""
+        if not self.config.logging.log_samples or not self.logger_manager:
+            return
+            
+        try:
+            # Create a simple generation function
+            def generate_sample(prompt_tokens, max_tokens=50):
+                # Simple greedy decoding
+                all_tokens = list(prompt_tokens)
+                
+                for _ in range(max_tokens):
+                    # Get the next token prediction
+                    with self.mixed_precision.cast_forward(self.model):
+                        logits = self.model(mx.array([all_tokens]))
+                    
+                    # Get the last token's logits
+                    next_token_logits = logits[0, -1, :]
+                    
+                    # Greedy selection
+                    next_token = mx.argmax(next_token_logits)
+                    
+                    # Add to generated sequence
+                    all_tokens.append(int(next_token.item()))
+                    
+                    # Stop if we hit EOS
+                    if int(next_token.item()) == self.tokenizer.EOS_TOKEN:
+                        break
+                
+                return all_tokens
+            
+            # Generate samples from validation data if available
+            samples = []
+            num_samples = min(self.config.logging.log_samples_count, 3)
+            
+            if self.data_manager.has_validation_data:
+                for i in range(num_samples):
+                    # Get a validation batch
+                    val_batch = self.data_manager.generate_validation_batch(i)
+                    
+                    # Take the first sequence from the batch
+                    prompt_tokens = val_batch[0, :20].tolist()  # Use first 20 tokens as prompt
+                    
+                    # Generate continuation
+                    generated_tokens = generate_sample(prompt_tokens)
+                    
+                    # Convert to text
+                    prompt_text = self.tokenizer.detokenize(prompt_tokens)
+                    full_text = self.tokenizer.detokenize(generated_tokens)
+                    
+                    samples.append({
+                        "prompt": prompt_text,
+                        "generated": full_text[len(prompt_text):]
+                    })
+            else:
+                # Generate from fixed prompts
+                prompts = [
+                    "Once upon a time",
+                    "The quick brown fox",
+                    "In a galaxy far, far away"
+                ]
+                
+                for i in range(min(num_samples, len(prompts))):
+                    prompt_text = prompts[i]
+                    prompt_tokens = self.tokenizer.tokenize(prompt_text)
+                    
+                    # Generate continuation
+                    generated_tokens = generate_sample(prompt_tokens)
+                    
+                    # Convert to text
+                    full_text = self.tokenizer.detokenize(generated_tokens)
+                    
+                    samples.append({
+                        "prompt": prompt_text,
+                        "generated": full_text[len(prompt_text):]
+                    })
+            
+            # Format samples for logging
+            formatted_samples = []
+            for i, sample in enumerate(samples):
+                formatted_samples.append(f"Sample {i+1}:\nPrompt: {sample['prompt']}\nGenerated: {sample['generated']}\n")
+            
+            # Log samples
+            self.logger_manager.log_text_samples(step, formatted_samples)
+            
+        except Exception as e:
+            self.logger.warning(f"Error generating samples: {e}")
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Train a language model with MLX')
@@ -1217,7 +1861,24 @@ def main():
                        help='Optional run ID (timestamp will be used if not provided)')
     parser.add_argument('--log-interval', type=int, default=None,
                        help='Override logging interval from config (number of steps between logs)')
+    parser.add_argument('--mixed-precision', action='store_true',
+                       help='Enable mixed precision training')
+    parser.add_argument('--precision', choices=['float16', 'bfloat16'], default='float16',
+                       help='Precision to use for mixed precision training')
+    parser.add_argument('--gradient-checkpointing', action='store_true',
+                       help='Enable gradient checkpointing to save memory')
+    parser.add_argument('--find-lr', action='store_true',
+                       help='Run learning rate finder before training')
+    parser.add_argument('--tensorboard', action='store_true',
+                       help='Enable TensorBoard logging')
+    parser.add_argument('--wandb', action='store_true',
+                       help='Enable Weights & Biases logging')
+    parser.add_argument('--wandb-project', type=str, default=None,
+                       help='Weights & Biases project name')
+    parser.add_argument('--wandb-entity', type=str, default=None,
+                       help='Weights & Biases entity name')
     args = parser.parse_args()
+    
     # Make 'runs' directory if it doesn't exist
     os.makedirs('runs', exist_ok=True)
     
@@ -1240,6 +1901,48 @@ def main():
         if 'steps' not in config['logging']:
             config['logging']['steps'] = {}
         config['logging']['steps']['logging_interval'] = args.log_interval
+        config_modified = True
+    
+    # Enable mixed precision if requested
+    if args.mixed_precision:
+        if 'system' not in config:
+            config['system'] = {}
+        config['system']['mixed_precision'] = True
+        config['system']['precision'] = args.precision
+        config_modified = True
+    
+    # Enable gradient checkpointing if requested
+    if args.gradient_checkpointing:
+        if 'system' not in config:
+            config['system'] = {}
+        config['system']['gradient_checkpointing'] = True
+        config_modified = True
+    
+    # Enable learning rate finder if requested
+    if args.find_lr:
+        if 'training' not in config:
+            config['training'] = {}
+        if 'lr_finder' not in config['training']:
+            config['training']['lr_finder'] = {}
+        config['training']['lr_finder']['enabled'] = True
+        config_modified = True
+    
+    # Enable TensorBoard logging if requested
+    if args.tensorboard:
+        if 'logging' not in config:
+            config['logging'] = {}
+        config['logging']['tensorboard'] = True
+        config_modified = True
+    
+    # Enable Weights & Biases logging if requested
+    if args.wandb:
+        if 'logging' not in config:
+            config['logging'] = {}
+        config['logging']['wandb'] = True
+        if args.wandb_project:
+            config['logging']['wandb_project'] = args.wandb_project
+        if args.wandb_entity:
+            config['logging']['wandb_entity'] = args.wandb_entity
         config_modified = True
             
     # Write to temporary config file if modified
