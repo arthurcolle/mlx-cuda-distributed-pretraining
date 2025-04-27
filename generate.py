@@ -170,37 +170,46 @@ def main():
                 
                 # Initialize with prompt tokens
                 all_tokens = prompt_tokens
+                generated_tokens = []
                 
                 # Generate one token at a time
                 for _ in range(max_new_tokens):
-                    # Get logits for the next token
-                    logits = model(all_tokens)
-                    
-                    # Get the last token's logits
-                    next_token_logits = logits[-1, :]
-                    
-                    # Simple greedy decoding - just take the argmax
-                    next_token = mx.argmax(next_token_logits)
-                    
-                    # Convert to scalar for printing
-                    next_token_id = int(next_token.item())
-                    print(f"Generated token ID: {next_token_id}")
-                    
-                    # Append to the sequence
-                    all_tokens = mx.concatenate([all_tokens, next_token.reshape(1)])
+                    try:
+                        # Get logits for the next token
+                        logits = model(all_tokens)
+                        
+                        # Get the last token's logits
+                        next_token_logits = logits[-1, :]
+                        
+                        # Simple greedy decoding - just take the argmax
+                        next_token = mx.argmax(next_token_logits)
+                        
+                        # Convert to scalar for printing
+                        next_token_id = int(next_token.item())
+                        print(f"Generated token ID: {next_token_id}")
+                        
+                        # Add to our list of generated tokens
+                        generated_tokens.append(next_token_id)
+                        
+                        # Append to the sequence
+                        all_tokens = mx.concatenate([all_tokens, next_token.reshape(1)])
+                    except Exception as e:
+                        print(f"Error generating token: {e}")
+                        break
                 
-                return all_tokens
+                # Return both the full sequence and just the new tokens
+                return all_tokens, mx.array(generated_tokens)
             
             # Try with a very limited number of tokens first
             print("Attempting simple generation with 10 tokens...")
-            all_generated = simple_generate(
+            all_generated, new_tokens = simple_generate(
                 trainer.model,
                 mx.array(tokens),
                 max_new_tokens=10
             )
             
-            # Extract only the new tokens (excluding prompt)
-            greedy_output = all_generated[len(tokens):]
+            # Use the new tokens directly
+            greedy_output = new_tokens
             greedy_score = 0.0
             
         except Exception as e2:
@@ -213,18 +222,23 @@ def main():
                 print(f"Prompt shape: {prompt_array.shape}")
                 
                 # Get model output for the prompt
-                with mx.capture_operations() as ops:
-                    logits = trainer.model(prompt_array)
+                logits = trainer.model(prompt_array)
                 
                 print(f"Model output shape: {logits.shape}")
-                print(f"Operations captured: {len(ops)}")
                 
-                # Just return the prompt as output since we couldn't generate
-                greedy_output = prompt_array
+                # Try to get the next token
+                next_token = mx.argmax(logits[-1, :])
+                print(f"Next token prediction: {next_token.item()}")
+                
+                # Create a simple output with just the predicted token
+                greedy_output = mx.array([next_token.item()])
                 greedy_score = 0.0
                 
             except Exception as e3:
                 print(f"All generation methods failed: {e3}")
+                print("Detailed error:", e3)
+                import traceback
+                traceback.print_exc()
                 greedy_output = mx.array([])
                 greedy_score = 0.0
     # Make sure we have output to display
@@ -251,16 +265,28 @@ def main():
             
             # Try to inspect the model's vocabulary
             try:
-                # Get the model's vocabulary size from the embedding layer
-                model_vocab_size = trainer.model.vocab_size
-                print(f"Model vocabulary size: {model_vocab_size}")
+                # Try to get vocabulary size from embed_tokens if it exists
+                if hasattr(trainer.model, 'embed_tokens'):
+                    model_vocab_size = trainer.model.embed_tokens.weight.shape[0]
+                    print(f"Model vocabulary size (from embedding layer): {model_vocab_size}")
+                else:
+                    # Try to find the embedding layer by inspecting the model
+                    print("Model doesn't have direct embed_tokens attribute, trying to find embedding layer...")
+                    for name, param in trainer.model.parameters().items():
+                        if 'embed' in name.lower() and len(param.shape) == 2:
+                            print(f"Found potential embedding layer: {name} with shape {param.shape}")
+                            model_vocab_size = param.shape[0]
+                            print(f"Model vocabulary size (from {name}): {model_vocab_size}")
+                            break
+                    else:
+                        print("Could not find embedding layer in model parameters")
                 
                 # Check if there's a significant mismatch
                 if hasattr(trainer.tokenizer, 'tokenizer'):
                     tokenizer_vocab_size = len(trainer.tokenizer.tokenizer.get_vocab())
                     print(f"Tokenizer vocabulary size: {tokenizer_vocab_size}")
                     
-                    if model_vocab_size != tokenizer_vocab_size:
+                    if 'model_vocab_size' in locals() and model_vocab_size != tokenizer_vocab_size:
                         print(f"MISMATCH DETECTED: Model expects {model_vocab_size} tokens but tokenizer has {tokenizer_vocab_size}")
                 elif hasattr(trainer.tokenizer, 'external_tokenizer'):
                     # For TokenizerManager which uses external_tokenizer
@@ -269,10 +295,12 @@ def main():
                         ext_vocab_size = trainer.tokenizer.external_tokenizer.vocab_size
                         print(f"External tokenizer vocabulary size: {ext_vocab_size}")
                         
-                        if model_vocab_size != ext_vocab_size:
+                        if 'model_vocab_size' in locals() and model_vocab_size != ext_vocab_size:
                             print(f"MISMATCH DETECTED: Model expects {model_vocab_size} tokens but tokenizer has {ext_vocab_size}")
             except Exception as e:
                 print(f"Error inspecting vocabulary: {e}")
+                import traceback
+                traceback.print_exc()
         else:
             print(f"Generated Output: {output_text}")
             print(f"Generation Score: {greedy_score:.3f}")
@@ -292,7 +320,10 @@ def main():
                 ext_vocab_size = trainer.tokenizer.external_tokenizer.vocab_size
                 print(f"External tokenizer vocabulary size: {ext_vocab_size}")
         
-        print(f"Model vocabulary size: {trainer.model.vocab_size}")
+        # Try to get model vocabulary size from embedding layer
+        if hasattr(trainer.model, 'embed_tokens'):
+            model_vocab_size = trainer.model.embed_tokens.weight.shape[0]
+            print(f"Model vocabulary size (from embedding layer): {model_vocab_size}")
     except Exception as e:
         print(f"Error getting vocabulary info: {e}")
     
