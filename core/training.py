@@ -928,29 +928,38 @@ class Trainer:
         # Get checkpoint file paths
         model_path, optimizer_path, state_path = CheckpointManager.get_checkpoint_paths(checkpoint_path)
         
-        # Load model weights
+        # Load model weights with strict=False to allow architecture mismatches
         print(f"Loading model weights from {model_path}")
-        #weights = mx.load(model_path)
-        self.model.load_weights(model_path)
+        self.model.load_weights(model_path, strict=False)
+        
         # Load optimizer state if not resetting
         if not reset_optimizer:
             print(f"Loading optimizer state from {optimizer_path}")
-            state_dict = mx.load(optimizer_path)
-            state = tree_unflatten(list(state_dict.items()))
-            self.optimizer.state = state
+            try:
+                state_dict = mx.load(optimizer_path)
+                state = tree_unflatten(list(state_dict.items()))
+                self.optimizer.state = state
+            except Exception as e:
+                print(f"Warning: Failed to load optimizer state: {e}")
+                print("Continuing with fresh optimizer state")
         
         # Load training state
         print(f"Loading training state from {state_path}")
-        with open(state_path, 'r') as f:
-            training_state = json.load(f)
-        
-        # Restore training state
-        self.start_step = training_state['step'] if isinstance(training_state['step'], int) else 0
-        self.data_manager.val_ptr = training_state['val_ptr']
-        self.total_tokens = training_state['total_tokens']
-        self.validation_losses = training_state['validation_losses']
-        
-        print(f"Resumed training from checkpoint {checkpoint_path} at step {self.start_step}")
+        try:
+            with open(state_path, 'r') as f:
+                training_state = json.load(f)
+            
+            # Restore training state
+            self.start_step = training_state['step'] if isinstance(training_state['step'], int) else 0
+            self.data_manager.val_ptr = training_state.get('val_ptr', 0)
+            self.total_tokens = training_state.get('total_tokens', 0)
+            self.validation_losses = training_state.get('validation_losses', [])
+            
+            print(f"Resumed training from checkpoint {checkpoint_path} at step {self.start_step}")
+        except Exception as e:
+            print(f"Warning: Failed to load training state: {e}")
+            print("Continuing with default training state")
+            self.start_step = 0
         
         return self.start_step
 
