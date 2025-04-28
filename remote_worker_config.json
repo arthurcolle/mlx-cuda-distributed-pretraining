@@ -1,0 +1,17 @@
+{
+  "workers": [
+    {
+      "id": "modal_a100_1",
+      "type": "modal",
+      "app_name": "mlx-hybrid-muon-400m",
+      "gpu_count": 3,
+      "gpu_type": "A100-80GB" 
+    }
+  ],
+  "memory_constraints": {
+    "local_memory_limit_gb": 15,
+    "use_memory_efficient_attention": true,
+    "gradient_checkpointing": true,
+    "optimize_memory_use": true
+  }
+}

@@ -1,0 +1,35 @@
+# Base configuration file for MLX Pretrain models
+# All other configs should inherit from this
+
+# Model architecture parameters
+model:
+  dim: 768                # Model dimension
+  n_layers: 12            # Number of layers
+  n_heads: 12             # Number of attention heads
+  norm_eps: 1e-5          # Layer norm epsilon
+  vocab_size: 32000       # Vocabulary size
+
+# Training parameters
+training:
+  batch_size: 32          # Batch size per device
+  learning_rate: 6e-4     # Learning rate
+  weight_decay: 1e-1      # Weight decay
+  beta1: 0.9              # Adam beta1
+  beta2: 0.95             # Adam beta2
+  max_seq_len: 1024       # Maximum sequence length
+  max_tokens: 1_000_000   # Number of tokens to train on
+  eval_interval: 1000     # Steps between evaluations
+  save_interval: 1000     # Steps between checkpoints
+  log_interval: 10        # Steps between logging
+
+# Tokenizer settings
+tokenizer:
+  type: "bpe"             # Tokenizer type
+  model_path: "tokenizer/tokenizer.model"  # Path to tokenizer model
+
+# Distribution settings
+distributed:
+  enabled: false          # Enable distributed training
+  backend: "nccl"         # Distribution backend
+  world_size: 1           # Number of processes
+  rank: 0                 # Process rank

@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 import yaml
 import mlx.optimizers as optim
-import mlx_optimizers as optim_x
+import optimizers as optim_x
+from optimizers import Shampoo, ShampooParams, AdamWEnhanced, SGDEnhanced, LionEnhanced
+# Import schedule functions from local module to fix missing schedule functions
+from mlx_lm_utils import linear_schedule, cosine_decay, join_schedules
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
@@ -15,16 +18,24 @@ from datetime import datetime
 import os
 import threading
 import queue
-#from mlx_lm.models.llama import Model, ModelArgs
+# First try custom implementation with Flash Attention
+try:
+    from models.llama import Model, ModelArgs
+    USING_FLASH_ATTENTION = True
+    print("Using custom Llama implementation with FlashAttention")
+except ImportError:
+    USING_FLASH_ATTENTION = False
+    print("Flash Attention not available, falling back to standard implementation")
+    #from mlx_lm.models.llama import Model, ModelArgs
 import importlib
 from mlx.utils import tree_flatten, tree_map, tree_unflatten
 import inspect
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Callable, Any, Optional, Union, Tuple
-from distributed_utils import DeviceManager, DistributedOptimizer
+from distributed.utils import DeviceManager, DistributedOptimizer
 # Import Modal-specific utilities if available
 try:
-    from modal_cuda_utils import ModalCudaManager, ModalDistributedOptimizer
+    from modal.modal_cuda_utils import ModalCudaManager, ModalDistributedOptimizer
     MODAL_AVAILABLE = True
 except ImportError:
     MODAL_AVAILABLE = False
@@ -65,7 +76,8 @@ class LoggingConfig:
     checkpoint_dir: str
     steps: Dict[str, int]
     metrics: Dict[str, bool]
-    # Default to 0 (no validation) if not specified
+    # How many checkpoint snapshots to keep (older will be deleted)
+    max_snapshots: int = 5
 
 @dataclass
 class SystemConfig:
@@ -74,11 +86,13 @@ class SystemConfig:
     distributed: bool = False
     devices: Optional[List[str]] = None
     cuda_devices: Optional[List[int]] = None
+    memory_limit: Optional[int] = None
 
 @dataclass
 class ResumeConfig:
     checkpoint: str  # Path to checkpoint base name
     reset_optimizer: bool = False  # Optional flag to reset optimizer state
+    reset_training_state: bool = False  # Optional flag to reset training state (for finetuning)
 
 @dataclass
 class Config:
@@ -141,12 +155,73 @@ class CheckpointManager:
         return run_dir, run_dir / 'log.txt', checkpoint_dir
         
     @staticmethod
-    def get_checkpoint_paths(checkpoint_path: str) -> tuple[str, str, str]:
-        """Returns the paths for model, optimizer, and state files"""
+    def get_checkpoint_paths(checkpoint_path: str) -> tuple[str, str, str, str]:
+        """Returns the paths for model, optimizer, state, and gradients files"""
         model_path = f"{checkpoint_path}_model.safetensors"
         optimizer_path = f"{checkpoint_path}_optimizer.safetensors"
         state_path = f"{checkpoint_path}_state.json"
-        return model_path, optimizer_path, state_path
+        gradients_path = f"{checkpoint_path}_gradients.safetensors"
+        return model_path, optimizer_path, state_path, gradients_path
+        
+    @staticmethod
+    def cleanup_old_checkpoints(checkpoint_dir: Path, max_snapshots: int = 5, exclude: list = None):
+        """Keeps only the specified number of most recent checkpoints.
+        
+        Args:
+            checkpoint_dir: Directory containing checkpoints
+            max_snapshots: Maximum number of snapshots to keep
+            exclude: List of checkpoint step IDs to exclude from cleanup (e.g. 'final')
+        """
+        if exclude is None:
+            exclude = ['final']  # Always exclude final checkpoint
+            
+        # Get all checkpoint files
+        all_checkpoints = {}
+        for path in checkpoint_dir.glob('step_*_state.json'):
+            # Extract step ID
+            step_str = path.name.split('_')[1]
+            if step_str in exclude:
+                continue
+                
+            try:
+                step = int(step_str)
+                all_checkpoints[step] = path.name.replace('_state.json', '')
+            except ValueError:
+                # Skip non-integer step IDs
+                continue
+        
+        # Check if we need to delete any checkpoints
+        if len(all_checkpoints) <= max_snapshots:
+            return
+            
+        # Sort by step number (oldest first)
+        sorted_steps = sorted(all_checkpoints.keys())
+        # Determine steps to remove
+        steps_to_remove = sorted_steps[:-max_snapshots]
+        
+        # Remove old checkpoints
+        for step in steps_to_remove:
+            basename = all_checkpoints[step]
+            for ext in ['_model.safetensors', '_optimizer.safetensors', '_state.json', '_gradients.safetensors']:
+                file_path = checkpoint_dir / f"{basename}{ext}"
+                if file_path.exists():
+                    file_path.unlink()
+            
+        # Update metadata to remove deleted checkpoints
+        metadata_path = checkpoint_dir.parent / 'metadata.json'
+        if metadata_path.exists():
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+            
+            if 'checkpoints' in metadata:
+                # Filter out deleted checkpoints
+                metadata['checkpoints'] = [
+                    cp for cp in metadata['checkpoints'] 
+                    if not (isinstance(cp['step'], int) and cp['step'] in steps_to_remove)
+                ]
+                
+                with open(metadata_path, 'w') as f:
+                    json.dump(metadata, f, indent=2)
 
 class TokenizerManager:
     def __init__(self, config: DataConfig, run_dir: Optional[Path] = None):
@@ -304,6 +379,8 @@ class DataManager:
                 chunk_size = self.config.preprocessing['max_context_size']
                 overlap = self.config.preprocessing.get('chunk_overlap', 0)
                 
+                # Set context window to 256
+                chunk_size = 256  # Override with fixed size of 256
                 # Handle overlapping chunks if specified
                 stride = chunk_size - overlap
                 for i in range(0, len(text), stride):
@@ -354,14 +431,16 @@ class OptimizationManager:
         cfg = self.config.scheduler
         initial_lr = self.config.hyperparameters['learning_rate']
         
+        # We already imported scheduler functions at the top of the file
+        
         if cfg['type'] == 'cosine_with_warmup':
-            warmup = optim.linear_schedule(0, initial_lr, steps=cfg['warmup_steps'])
-            cosine = optim.cosine_decay(initial_lr, self.num_training_steps, initial_lr * cfg['min_lr_ratio'])
-            return optim.join_schedules([warmup, cosine], [cfg['warmup_steps']])
+            warmup = linear_schedule(0, initial_lr, steps=cfg['warmup_steps'])
+            cosine = cosine_decay(initial_lr, self.num_training_steps, initial_lr * cfg['min_lr_ratio'])
+            return join_schedules([warmup, cosine], [cfg['warmup_steps']])
         elif cfg['type'] == 'cosine':
-            return optim.cosine_decay(initial_lr, self.num_training_steps, initial_lr * cfg['min_lr_ratio'])
+            return cosine_decay(initial_lr, self.num_training_steps, initial_lr * cfg['min_lr_ratio'])
         elif cfg['type'] == 'linear':
-            return optim.linear_schedule(initial_lr, 0, steps=self.num_training_steps)
+            return linear_schedule(initial_lr, 0, steps=self.num_training_steps)
         else:
             raise ValueError(f"Unsupported scheduler type: {cfg['type']}")
             
@@ -376,27 +455,92 @@ class OptimizationManager:
             kwargs['eps'] = cfg['eps']
         if 'weight_decay' in cfg:
             kwargs['weight_decay'] = self.config.hyperparameters['weight_decay']
-        if cfg['optimizer'] == 'adamw':
+        
+        # Add advanced features if specified
+        if 'grad_clip_norm' in cfg:
+            kwargs['grad_clip_norm'] = cfg['grad_clip_norm']
+        if 'ema_momentum' in cfg:
+            kwargs['ema_momentum'] = cfg['ema_momentum']
+        
+        # New enhanced optimizers
+        if cfg['optimizer'] == 'adamw_enhanced':
+            # Use our enhanced AdamW implementation with proper decoupled weight decay
+            return AdamWEnhanced(**kwargs)
+        elif cfg['optimizer'] == 'sgd_enhanced':
+            # Use our enhanced SGD implementation with proper weight decay
+            if 'momentum' in cfg:
+                kwargs['momentum'] = cfg['momentum']
+            if 'nesterov' in cfg:
+                kwargs['nesterov'] = cfg['nesterov']
+            return SGDEnhanced(**kwargs)
+        elif cfg['optimizer'] == 'lion':
+            # Use Lion optimizer (sign-based momentum) - good for large models
+            return LionEnhanced(**kwargs)
+        # Standard MLX optimizers
+        elif cfg['optimizer'] == 'adamw':
             return optim.AdamW(**kwargs)
         elif cfg['optimizer'] == 'adam':
+            # MLX AdamW doesn't support weight_decay, so remove it
+            if 'weight_decay' in kwargs:
+                del kwargs['weight_decay']
             return optim.Adam(**kwargs)
         elif cfg['optimizer'] == 'muon':
-            # Create AdamW optimizer for non-matrix params
-            adamw_kwargs = kwargs.copy()
-            # Default values for AdamW
-            adamw_kwargs.setdefault('betas', (0.9, 0.999))
-            adamw_kwargs.setdefault('eps', 1e-8)
-            adamw_opt = optim.AdamW(**adamw_kwargs)
+            # Muon is a variant of Adam with improved convergence properties
+            muon_kwargs = {
+                'learning_rate': kwargs['learning_rate'],
+                'betas': kwargs.get('betas', (0.9, 0.999)),
+                'eps': kwargs.get('eps', 1e-8),
+                'weight_decay': kwargs.get('weight_decay', 0.0)
+            }
+            return optim_x.Muon(**muon_kwargs)
+        elif cfg['optimizer'] == 'shampoo':
+            # Create Shampoo optimizer with appropriate parameters
+            shampoo_params = ShampooParams(
+                beta1=cfg.get('beta1', 0.9),
+                beta2=cfg.get('beta2', 0.95),
+                epsilon=cfg.get('epsilon', 1e-8),
+                weight_decay=kwargs.get('weight_decay', 0.0),
+                update_period=cfg.get('update_period', 100),
+                start_preconditioning_step=cfg.get('start_preconditioning_step', 1000),
+                preconditioner_epsilon=cfg.get('preconditioner_epsilon', 1e-6),
+                exponent_override=cfg.get('exponent_override', 0.75),
+                use_bias_correction=True,
+                grafting_optimizer=cfg.get('grafting_optimizer', 'adam'),
+                use_decoupled_weight_decay=True
+            )
+            return Shampoo(learning_rate=kwargs['learning_rate'], params=shampoo_params)
+        elif cfg['optimizer'] == 'hybrid':
+            # Create hybrid optimizer that combines multiple optimizers
             
-            # Only pass relevant params to Muon
-            muon_kwargs = {'learning_rate': kwargs['learning_rate']}
-            # Default values for Muon
-            muon_kwargs.setdefault('momentum', 0.95)
-            muon_kwargs.setdefault('nesterov', True)
-            muon_kwargs.setdefault('ns_steps', 5)
+            # Determine which optimizers to use for different parameter types
+            matrix_opt_name = cfg.get('matrix_optimizer', 'muon')
+            non_matrix_opt_name = cfg.get('non_matrix_optimizer', 'adamw')
             
-            return optim_x.Muon(**muon_kwargs, alternate_optimizer=adamw_opt)
+            # Create a temporary config for matrix optimizer
+            matrix_cfg = {'optimizer': matrix_opt_name}
+            for k, v in cfg.items():
+                if k not in ['optimizer', 'non_matrix_optimizer']:
+                    matrix_cfg[k] = v
+                    
+            # Create a temporary config for non-matrix optimizer
+            non_matrix_cfg = {'optimizer': non_matrix_opt_name}
+            for k, v in cfg.items():
+                if k not in ['optimizer', 'matrix_optimizer']:
+                    non_matrix_cfg[k] = v
+            
+            # Recursively create the optimizers
+            matrix_optimizer = self.create_optimizer(matrix_cfg)
+            non_matrix_optimizer = self.create_optimizer(non_matrix_cfg)
+            
+            # Create and return the hybrid optimizer
+            return optim_x.HybridOptimizer(
+                learning_rate=kwargs['learning_rate'],
+                matrix_optimizer=matrix_optimizer,
+                non_matrix_optimizer=non_matrix_optimizer
+            )
         elif cfg['optimizer'] == 'sgd':
+            if 'weight_decay' in kwargs:
+                del kwargs['weight_decay']  # MLX SGD doesn't support weight_decay
             return optim.SGD(**kwargs)
         else:
             raise ValueError(f"Unsupported optimizer: {cfg['optimizer']}")
@@ -491,7 +635,7 @@ class Trainer:
         
     def setup_model(self):
         model_cfg = self.config.model
-        arch_file = f"arch.{model_cfg.architecture}"
+        arch_file = f"models.{model_cfg.architecture}"
         mlx_lm_file = f"mlx_lm.models.{model_cfg.architecture}"
         Model = None
         ModelArgs = None
@@ -516,7 +660,7 @@ class Trainer:
             'rms_norm_eps': model_cfg.normalization['rms_norm_eps'],
             'vocab_size': self.tokenizer.VOCAB_SIZE,
             'head_dim': model_cfg.attention['head_dim'],
-            'max_position_embeddings': model_cfg.attention['max_position_embeddings'],
+            'max_position_embeddings': 256,  # Override with fixed context window size of 256
             'num_key_value_heads': model_cfg.attention['num_kv_heads'],
             'attention_bias': model_cfg.misc['attention_bias'],
             'mlp_bias': model_cfg.misc['mlp_bias'],
@@ -527,6 +671,9 @@ class Trainer:
             'logit_scale': model_cfg.misc.get('logit_scale', None),
             'num_local_experts': model_cfg.misc.get('num_local_experts', 0),
             'num_experts_per_tok': model_cfg.misc.get('num_experts_per_tok', 0),
+            'use_flash_attention': model_cfg.attention.get('use_flash_attention', True),
+            'use_flex_attention': model_cfg.attention.get('use_flex_attention', False),
+            'flash_block_size': model_cfg.attention.get('flash_block_size', 128),
         }
         valid_args = filter_valid_args(ModelArgs, all_args)
         args = ModelArgs(**valid_args)
@@ -561,6 +708,14 @@ class Trainer:
         self.lr_schedule = opt_manager.create_scheduler()
         base_optimizer = opt_manager.create_optimizer(self.lr_schedule)
         
+        # Set up gradient accumulation if enabled
+        self.grad_accum_steps = self.config.training.hyperparameters.get('gradient_accumulation_steps', 1)
+        if self.grad_accum_steps > 1:
+            print(f"Using gradient accumulation with {self.grad_accum_steps} steps")
+            # Effective batch size for logging
+            self.effective_batch_size = batch_size * self.grad_accum_steps
+            print(f"Effective batch size: {self.effective_batch_size}")
+        
         # Wrap optimizer in distributed optimizer if needed
         if self.distributed and self.device_mgr:
             if self.running_on_modal and MODAL_AVAILABLE and isinstance(self.device_mgr, ModalCudaManager):
@@ -589,7 +744,10 @@ class Trainer:
             'training_info': {
                 'steps_per_epoch': self.steps_per_epoch,
                 'total_steps': self.total_steps,
-                'epochs': self.config.training.epochs
+                'epochs': self.config.training.epochs,
+                'gradient_accumulation_steps': getattr(self, 'grad_accum_steps', 1),
+                'effective_batch_size': getattr(self, 'effective_batch_size', 
+                                              self.config.training.hyperparameters['batch_size'])
             }
         }
         
@@ -614,9 +772,16 @@ class Trainer:
             with open(self.config_path, 'r') as config_file:
                 f.write(config_file.read())
     
-    def compute_loss(self, model, inputs: mx.array, targets: mx.array) -> Tuple[mx.array, int]:
-        # Standard loss computation for non-distributed case
-        if not self.distributed or not self.device_mgr:
+    def compute_loss(self, model, *args) -> Tuple[mx.array, int]:
+        """Compute cross-entropy loss. Supports:
+        - text-only mode: (inputs, targets)
+        - multimodal mode: (images, inputs, targets)"""
+        # Unpack arguments
+        if len(args) == 3:
+            images, inputs, targets = args
+            logits = model(images, inputs)
+        else:
+            inputs, targets = args
             logits = model(inputs)
             logits = logits.astype(mx.float32)
             loss = nn.losses.cross_entropy(logits, targets)
@@ -679,12 +844,16 @@ class Trainer:
                 loss, tokens = self.compute_loss(self.model, batch[:, :-1], batch[:, 1:])
                 
                 # Accumulate metrics
-                total_loss += float(loss)
-                total_tokens += tokens
+                total_loss += float(loss.item() if hasattr(loss, 'item') else loss)
+                total_tokens += int(tokens.item() if hasattr(tokens, 'item') else tokens)
                 
-                # Clear GPU cache if needed
+                # Clear GPU cache if needed - just continue if mx.clear_cache is not available
                 if not self.distributed and self.config.system.device == "gpu":
-                    mx.clear_cache()
+                    try:
+                        mx.clear_cache()
+                    except AttributeError:
+                        # mx.clear_cache() might not be available in this version
+                        pass
         else:
             # Distributed validation - process batches in parallel
             validation_batches = []
@@ -735,6 +904,12 @@ class Trainer:
         optimizer_state = dict(tree_flatten(self.optimizer.state))
         optimizer_path = self.checkpoint_dir / f'step_{step}_optimizer.safetensors'
         mx.save_safetensors(str(optimizer_path), optimizer_state)
+        # Save gradients if provided
+        if hasattr(self, 'last_update_grad') and self.last_update_grad is not None:
+            # flatten gradient pytree and save
+            grad_dict = dict(tree_flatten(self.last_update_grad))
+            grad_path = self.checkpoint_dir / f'step_{step}_gradients.safetensors'
+            mx.save_safetensors(str(grad_path), grad_dict)
         
         # Save training state
         training_state = {
@@ -773,6 +948,11 @@ class Trainer:
         
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2)
+        # Clean up old snapshots
+        CheckpointManager.cleanup_old_checkpoints(
+            self.checkpoint_dir,
+            max_snapshots=self.config.logging.max_snapshots
+        )
 
     def log_metrics(self, step: int, loss: float, tokens: int, 
                    total_tokens: int, start_time: float, val_loss: float = None) -> str:
@@ -785,7 +965,7 @@ class Trainer:
             metrics.append(f"epoch={current_epoch}/{self.config.training.epochs} ({epoch_step}/{self.steps_per_epoch})")
         
         if self.config.logging.metrics['log_loss']:
-            metrics.append(f"loss={loss:.3e}")
+            metrics.append(f"loss={float(loss) if not np.isnan(loss) else 'NaN'}")
             
             # Add validation loss if available
             if val_loss is not None:
@@ -807,6 +987,11 @@ class Trainer:
             
         if self.config.logging.metrics['log_learning_rate']:
             metrics.append(f"lr={self.lr_schedule(step):.3e}")
+
+        # Add gradient accumulation info if enabled
+        if hasattr(self, 'grad_accum_steps') and self.grad_accum_steps > 1:
+            metrics.append(f"accum={self.grad_accum_steps}")
+            metrics.append(f"eff_bs={self.effective_batch_size}")
             
         return " | ".join(metrics)
 
@@ -815,8 +1000,8 @@ class Trainer:
         # Extract step from checkpoint path
         step_str = checkpoint_path.split('step_')[-1]
         
-        # Get checkpoint file paths
-        model_path, optimizer_path, state_path = CheckpointManager.get_checkpoint_paths(checkpoint_path)
+        # Get checkpoint file paths (model, optimizer, state, gradients)
+        model_path, optimizer_path, state_path, gradients_path = CheckpointManager.get_checkpoint_paths(checkpoint_path)
         
         # Load model weights
         print(f"Loading model weights from {model_path}")
@@ -828,6 +1013,17 @@ class Trainer:
             state_dict = mx.load(optimizer_path)
             state = tree_unflatten(list(state_dict.items()))
             self.optimizer.state = state
+            # Load gradient snapshot if available
+            try:
+                from pathlib import Path
+                if Path(gradients_path).exists():
+                    print(f"Loading gradient snapshot from {gradients_path}")
+                    grad_dict = mx.load(gradients_path)
+                    # rebuild pytree of gradients
+                    self.last_update_grad = tree_unflatten(list(grad_dict.items()))
+            except Exception:
+                # ignore if gradients snapshot not present or error
+                pass
         
         # Load training state
         print(f"Loading training state from {state_path}")
@@ -849,14 +1045,25 @@ class Trainer:
         total_tokens = self.total_tokens
         start_step = 0
         
-        # Check if resuming from checkpoint
+        # Check if resuming or finetuning from checkpoint
         if self.config.resume and self.config.resume.checkpoint:
             checkpoint_path = self.config.resume.checkpoint
             reset_optimizer = self.config.resume.reset_optimizer
             start_step = self.load_checkpoint(checkpoint_path, reset_optimizer)
-            
-            # If we're resuming, we should skip the initial validation
-            skip_initial_validation = True
+
+            # Handle finetuning by optionally resetting training state
+            if getattr(self.config.resume, 'reset_training_state', False):
+                # Start fresh training statistics but keep loaded model weights
+                start_step = 0
+                self.start_step = 0
+                self.total_tokens = 0
+                # Reset data manager validation pointer and loss history
+                self.data_manager.val_ptr = 0
+                self.validation_losses = []
+                skip_initial_validation = False
+            else:
+                # If resuming normally, skip initial validation
+                skip_initial_validation = True
         else:
             skip_initial_validation = False
         
@@ -893,6 +1100,10 @@ class Trainer:
                 if self.data_manager.has_validation_data:
                     log_file.write(f"Validation data: {self.config.data.validation_file}\n")
                     log_file.write(f"Validation batches: {self.data_manager.num_validation_batches}\n")
+                # Log gradient accumulation if enabled
+                if hasattr(self, 'grad_accum_steps') and self.grad_accum_steps > 1:
+                    log_file.write(f"Using gradient accumulation with {self.grad_accum_steps} steps\n")
+                    log_file.write(f"Effective batch size: {self.effective_batch_size}\n")
                 log_file.write("=" * 50 + "\n\n")
             else:
                 log_file.write(f"\nResuming training at step {start_step} at {datetime.now()}\n")
@@ -907,30 +1118,85 @@ class Trainer:
                 # Add to validation loss history
                 self.validation_losses.append((0, val_loss))
             
+            # Initialize gradient accumulation variables
+            accumulated_gradients = None
+            accumulated_tokens = 0
+            accum_step = 0
+            # Reset last-update gradient
+            self.last_update_grad = None
+            
             for step in progress_bar:
                 step += start_step
                 if step >= self.total_steps:
                     break
-                # Generate batch
-                batch = self.data_manager.generate_batch(step)
+                    
+                # Check if we need to do gradient accumulation
+                grad_accum_steps = getattr(self, 'grad_accum_steps', 1)
                 
-                # Forward and backward pass
-                (loss, tokens), grad = loss_value_and_grad(
-                    self.model, batch[:, :-1], batch[:, 1:]
-                )
+                # Generate batch (text-only or multimodal)
+                batch = self.data_manager.generate_batch(step)
+                if isinstance(batch, tuple):
+                    images, full_tokens = batch
+                    inputs, targets = full_tokens[:, :-1], full_tokens[:, 1:]
+                    (loss, tokens), grad = loss_value_and_grad(
+                        self.model, images, inputs, targets
+                    )
+                else:
+                    inputs, targets = batch[:, :-1], batch[:, 1:]
+                    (loss, tokens), grad = loss_value_and_grad(
+                        self.model, inputs, targets
+                    )
                 
                 # Gradient clipping if configured
                 if 'gradient_clip' in self.config.training.hyperparameters:
                     clip_value = self.config.training.hyperparameters['gradient_clip']
                     grad = tree_map(lambda x: mx.clip(x, -clip_value, clip_value), grad)
                 
-                # Update model
-                total_tokens += tokens
-                self.optimizer.update(self.model, grad)
-                mx.eval(loss)
+                # Gradient accumulation
+                if grad_accum_steps > 1:
+                    # Scale the gradient by 1/grad_accum_steps
+                    scaled_grad = tree_map(lambda x: x / grad_accum_steps, grad)
+                    
+                    if accumulated_gradients is None:
+                        # First accumulation step
+                        accumulated_gradients = scaled_grad
+                    else:
+                        # Add to accumulated gradients
+                        accumulated_gradients = tree_map(
+                            lambda x, y: x + y, accumulated_gradients, scaled_grad
+                        )
+                    
+                    # Accumulate tokens
+                    accumulated_tokens += tokens
+                    accum_step += 1
+                    
+                    # Only update if we've accumulated enough gradients or if it's the last step
+                    if accum_step == grad_accum_steps or step == self.total_steps - 1:
+                        # Update model with accumulated gradients
+                        total_tokens += accumulated_tokens
+                        # record for checkpoint
+                        self.last_update_grad = accumulated_gradients
+                        self.optimizer.update(self.model, accumulated_gradients)
+                        mx.eval(loss)
+                        
+                        # Reset accumulation
+                        accumulated_gradients = None
+                        accumulated_tokens = 0
+                        accum_step = 0
+                else:
+                    # Standard update without accumulation
+                    total_tokens += tokens
+                    # record for checkpoint
+                    self.last_update_grad = grad
+                    self.optimizer.update(self.model, grad)
+                    mx.eval(loss)
                 
                 if not self.distributed and self.config.system.device == "gpu":
-                    mx.clear_cache()
+                    try:
+                        mx.clear_cache()
+                    except AttributeError:
+                        # mx.clear_cache() might not be available in this version
+                        pass
                 
                 # Run validation
                 if self.validation_steps > 0 and self.data_manager.has_validation_data and (step + 1) % self.validation_steps == 0:
@@ -962,6 +1228,8 @@ class Trainer:
                     # Find the most recent validation loss if available
                     last_val_loss = val_loss if val_loss is not None else None
                     # Update total_tokens in the trainer instance for checkpoint saving
+                    self.total_tokens = total_tokens
+                    # include latest gradients in checkpoint
                     self.total_tokens = total_tokens
                     self.save_checkpoint(step + 1, last_val_loss)
         
@@ -1001,13 +1269,51 @@ class Trainer:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Train a language model with MLX')
-    parser.add_argument('--config', type=str, required=True,
+    parser.add_argument('config', type=str, 
                        help='Path to YAML configuration file')
+    parser.add_argument('--run-id', type=str, default=None,
+                       help='Optional run ID (timestamp will be used if not provided)')
+    parser.add_argument('--log-interval', type=int, default=None,
+                       help='Override logging interval from config (number of steps between logs)')
     args = parser.parse_args()
     # Make 'runs' directory if it doesn't exist
     os.makedirs('runs', exist_ok=True)
-    trainer = Trainer(args.config)
+    
+    # Load config
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Apply command line overrides
+    config_modified = False
+    
+    # Add run_id to config if provided
+    if args.run_id:
+        config['run_id'] = args.run_id
+        config_modified = True
+    
+    # Override logging interval if provided
+    if args.log_interval is not None:
+        if 'logging' not in config:
+            config['logging'] = {}
+        if 'steps' not in config['logging']:
+            config['logging']['steps'] = {}
+        config['logging']['steps']['logging_interval'] = args.log_interval
+        config_modified = True
+            
+    # Write to temporary config file if modified
+    config_path = args.config
+    if config_modified:
+        temp_config_path = f"{args.config}.tmp"
+        with open(temp_config_path, 'w') as f:
+            yaml.dump(config, f)
+        config_path = temp_config_path
+    
+    trainer = Trainer(config_path)
     trainer.train()
+    
+    # Clean up temporary config if created
+    if config_modified and os.path.exists(f"{args.config}.tmp"):
+        os.remove(f"{args.config}.tmp")
 
 if __name__ == "__main__":
     main()

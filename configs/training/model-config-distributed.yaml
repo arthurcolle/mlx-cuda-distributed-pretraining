@@ -1,0 +1,80 @@
+name: "Llama (2M) Distributed"
+overwrite: true
+data:
+  input_file: "train.jsonl"
+  # Optional validation file
+  validation_file: "val.jsonl"
+  # Optional external tokenizer path
+  tokenizer_path: "tokenizer"  # Path to a directory containing tokenizer.json
+  preprocessing:
+    max_context_size: 1024
+    chunk_overlap: 0  # If > 0, chunks will overlap by this many tokens
+    
+  tokenizer:
+    normal_vocab_size: 256
+    special_tokens:
+      pad: "<pad>"
+      bos: "<bos>"
+      eos: "<eos>"
+      # Add custom tokens if needed:
+      # ctrl1: "<ctrl1>"
+      # ctrl2: "<ctrl2>"
+
+model:
+  architecture: "llama"
+  dimensions:
+    hidden_size: 128
+    intermediate_size: 256  # 384 * 4
+    num_layers: 4
+  attention:
+    num_heads: 8
+    num_kv_heads: null  # If null, equals num_heads
+    head_dim: null  # If null, computed from hidden_size/num_heads
+    max_position_embeddings: null
+  normalization:
+    rms_norm_eps: 1.0e-5
+  rope:
+    theta: 10000
+    traditional: false
+    scaling: null
+  misc:
+    attention_bias: false
+    mlp_bias: false
+    tie_word_embeddings: true
+
+training:
+  # Number of epochs to train for (optional)
+  epochs: 1
+  hyperparameters:
+    batch_size: 16
+    learning_rate: 2.0e-2
+    weight_decay: 0.01
+    # iters: 10000  # If epochs is provided, this is ignored
+    
+  scheduler:
+    type: "cosine"  # Options: linear, cosine, cosine_with_warmup
+    min_lr_ratio: 0.01  # Minimum LR as a ratio of initial LR
+    
+  optimization:
+    optimizer: "muon"  # Options: adam, adamw, muon, sgd
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
+  steps:
+    logging_interval: 1
+    checkpoint_interval: 10000
+    validation_interval: 1000  # Run validation every 1000 steps (0 to disable)
+  metrics:
+    log_loss: true
+    log_perplexity: true
+    log_tokens_per_second: true
+    log_learning_rate: true
+    log_tokens_processed: true
+
+system:
+  seed: 42
+  device: "gpu"  # Options: cpu, gpu
+  distributed: true  # Enable distributed training
+  devices: ["gpu", "cpu"]  # List of MLX devices to use
+  cuda_devices: [0]  # List of CUDA device IDs to use

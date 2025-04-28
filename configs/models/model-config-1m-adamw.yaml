@@ -1,0 +1,84 @@
+data:
+  input_file: train.jsonl
+  preprocessing:
+    chunk_overlap: 64
+    max_context_size: 512
+  tokenizer:
+    normal_vocab_size: 32000
+    special_tokens:
+      bos: <bos>
+      eos: <eos>
+      pad: <pad>
+  tokenizer_path: tokenizer
+  validation_file: val.jsonl
+logging:
+  checkpoint_dir: checkpoints/micro-1m
+  log_dir: logs
+  metrics:
+    log_learning_rate: true
+    log_loss: true
+    log_perplexity: true
+    log_tokens_per_second: true
+    log_tokens_processed: true
+  steps:
+    checkpoint_interval: 200
+    logging_interval: 4
+    validation_interval: 100
+model:
+  architecture: llama
+  attention:
+    flash_block_size: 64
+    head_dim: 32
+    max_position_embeddings: 512
+    num_heads: 4
+    num_kv_heads: 2
+    use_flash_attention: false
+  dimensions:
+    hidden_size: 128
+    intermediate_size: 512
+    num_layers: 6
+  misc:
+    attention_bias: false
+    mlp_bias: false
+    tie_word_embeddings: true
+  normalization:
+    rms_norm_eps: 1.0e-05
+  rope:
+    scaling: null
+    theta: 10000
+    traditional: false
+name: Micro-1M-adamw-20250426_124630
+overwrite: true
+system:
+  cuda_devices: []
+  device: gpu
+  devices:
+  - mlx
+  distributed: false
+  seed: 42
+training:
+  epochs: null
+  hyperparameters:
+    batch_size: 32
+    gradient_accumulation_steps: 2
+    gradient_clip: 1.0
+    iters: 2000
+    learning_rate: 0.005
+    weight_decay: 0.01
+  optimization:
+    beta1: 0.9
+    beta2: 0.95
+    epsilon: 1.0e-08
+    exponent_override: 0.75
+    grafting_optimizer: adam
+    momentum: 0.95
+    nesterov: true
+    ns_steps: 5
+    optimizer: adamw
+    preconditioner_epsilon: 1.0e-06
+    start_preconditioning_step: 100
+    update_period: 50
+  scheduler:
+    min_lr_ratio: 0.1
+    type: cosine_with_warmup
+    warmup_steps: 200

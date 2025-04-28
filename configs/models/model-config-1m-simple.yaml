@@ -1,0 +1,76 @@
+data:
+  input_file: train.jsonl
+  preprocessing:
+    chunk_overlap: 64
+    max_context_size: 512
+  tokenizer:
+    normal_vocab_size: 32000
+    special_tokens:
+      bos: <bos>
+      eos: <eos>
+      pad: <pad>
+  tokenizer_path: tokenizer
+  validation_file: val.jsonl
+logging:
+  checkpoint_dir: checkpoints/micro-1m
+  log_dir: logs
+  metrics:
+    log_learning_rate: true
+    log_loss: true
+    log_perplexity: true
+    log_tokens_per_second: true
+    log_tokens_processed: true
+  steps:
+    checkpoint_interval: 200
+    logging_interval: 10
+    validation_interval: 100
+model:
+  architecture: llama
+  attention:
+    head_dim: 32
+    max_position_embeddings: 512
+    num_heads: 4
+    num_kv_heads: 4
+    use_flash_attention: false
+  dimensions:
+    hidden_size: 128
+    intermediate_size: 512
+    num_layers: 6
+  misc:
+    attention_bias: false
+    mlp_bias: false
+    tie_word_embeddings: true
+  normalization:
+    rms_norm_eps: 1.0e-05
+  rope:
+    scaling: null
+    theta: 10000
+    traditional: false
+name: Micro-1M-Simple
+overwrite: true
+run_id: Micro-1M-Simple-20250425_220849
+system:
+  cuda_devices: []
+  device: gpu
+  devices:
+  - mlx
+  distributed: false
+  seed: 42
+training:
+  epochs: 30
+  hyperparameters:
+    batch_size: 32
+    gradient_accumulation_steps: 2
+    gradient_clip: 1.0
+    learning_rate: 0.003
+    weight_decay: 0.01
+  optimization:
+    betas:
+    - 0.9
+    - 0.999
+    eps: 1.0e-08
+    optimizer: adamw
+  scheduler:
+    min_lr_ratio: 0.1
+    type: cosine_with_warmup
+    warmup_steps: 200

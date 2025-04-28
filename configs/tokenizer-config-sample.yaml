@@ -1,0 +1,13 @@
+name: "BPE Tokenizer Training"
+data:
+  input_file: "train.jsonl"
+  max_texts_to_train_on: 32768
+  tokenizer:
+    special_tokens:
+      pad: "<pad>"
+      bos: "<bos>"
+      eos: "<eos>"
+
+tokenizer:
+  vocab_size: 8192
+  output_dir: "tokenizer"
