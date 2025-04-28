@@ -435,30 +435,19 @@ class Model(nn.Module):
         
         # Get current model parameters
         model_params = dict(tree_flatten(self.parameters()))
-        
-        # Check for layer count mismatch
-        if not strict:
-            # Filter out parameters that don't exist in the model
-            filtered_params = {}
-            for k, v in param_dict.items():
-                if k in model_params:
-                    filtered_params[k] = v
-                elif k.startswith('model.layers.'):
-                    # Extract layer number from parameter name
-                    parts = k.split('.')
-                    if len(parts) > 2:
-                        try:
-                            layer_num = int(parts[2])
-                            if layer_num >= len(self.layers):
-                                print(f"Skipping parameter {k} - model only has {len(self.layers)} layers")
-                                continue
-                        except ValueError:
-                            pass
-                    filtered_params[k] = v
-            
-            param_dict = filtered_params
-            print(f"Non-strict loading: filtered out parameters that don't match model architecture")
-        
+
+        # Always filter out parameters that don't exist in the model
+        filtered_params = {}
+        extras = []
+        for k, v in param_dict.items():
+            if k in model_params:
+                filtered_params[k] = v
+            else:
+                extras.append(k)
+        if extras:
+            print(f"Warning: Ignoring {len(extras)} parameters not in model: {', '.join(extras)}")
+        param_dict = filtered_params
+
         # Load the weights into the model
         try:
             self.update(param_dict)
