@@ -1,6 +1,8 @@
-# MLX-Pretrain
+# mlx-cuda-distributed-pretraining
 
-`mlx-pretrain` is a library that allows easy pretraining of large language models (LLMs) using MLX on Apple Silicon with support for distributed training across mixed MLX-CUDA workloads.
+`mlx-cuda-distributed-pretraining` derives from pre-existing https://github.com/N8python/mlx-pretrain library
+
+`mlx-cuda-distributed-pretraining` is a library that allows easy pretraining of large language models (LLMs) using MLX on Apple Silicon with support for distributed training across mixed MLX-CUDA workloads.
 
 ## Repository Organization
 
