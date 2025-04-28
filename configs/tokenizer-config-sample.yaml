@@ -9,5 +9,6 @@ data:
       eos: "<eos>"
 
 tokenizer:
-  vocab_size: 8192
+  vocab_size: 200000
   output_dir: "tokenizer"
+  type: "modern_bpe"
