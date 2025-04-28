@@ -372,6 +372,13 @@ class DataManager:
             
     def _load_file(self, file_path: str, docs_list: list):
         """Helper method to load documents from a file."""
+        import os
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(
+                f"Data file not found: '{file_path}'.\n"
+                f"Please ensure the file exists. For a quick test, you can create a dummy file with:\n"
+                f"echo '{{\"text\": \"hello world\"}}' > {file_path}"
+            )
         with open(file_path, 'r') as f:
             for line in f:
                 d = json.loads(line)
