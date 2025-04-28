@@ -92,6 +92,7 @@ class SystemConfig:
 class ResumeConfig:
     checkpoint: str  # Path to checkpoint base name
     reset_optimizer: bool = False  # Optional flag to reset optimizer state
+    reset_training_state: bool = False  # Optional flag to reset training state (for finetuning)
 
 @dataclass
 class Config:
@@ -771,9 +772,16 @@ class Trainer:
             with open(self.config_path, 'r') as config_file:
                 f.write(config_file.read())
     
-    def compute_loss(self, model, inputs: mx.array, targets: mx.array) -> Tuple[mx.array, int]:
-        # Standard loss computation for non-distributed case
-        if not self.distributed or not self.device_mgr:
+    def compute_loss(self, model, *args) -> Tuple[mx.array, int]:
+        """Compute cross-entropy loss. Supports:
+        - text-only mode: (inputs, targets)
+        - multimodal mode: (images, inputs, targets)"""
+        # Unpack arguments
+        if len(args) == 3:
+            images, inputs, targets = args
+            logits = model(images, inputs)
+        else:
+            inputs, targets = args
             logits = model(inputs)
             logits = logits.astype(mx.float32)
             loss = nn.losses.cross_entropy(logits, targets)
@@ -1037,14 +1045,25 @@ class Trainer:
         total_tokens = self.total_tokens
         start_step = 0
         
-        # Check if resuming from checkpoint
+        # Check if resuming or finetuning from checkpoint
         if self.config.resume and self.config.resume.checkpoint:
             checkpoint_path = self.config.resume.checkpoint
             reset_optimizer = self.config.resume.reset_optimizer
             start_step = self.load_checkpoint(checkpoint_path, reset_optimizer)
-            
-            # If we're resuming, we should skip the initial validation
-            skip_initial_validation = True
+
+            # Handle finetuning by optionally resetting training state
+            if getattr(self.config.resume, 'reset_training_state', False):
+                # Start fresh training statistics but keep loaded model weights
+                start_step = 0
+                self.start_step = 0
+                self.total_tokens = 0
+                # Reset data manager validation pointer and loss history
+                self.data_manager.val_ptr = 0
+                self.validation_losses = []
+                skip_initial_validation = False
+            else:
+                # If resuming normally, skip initial validation
+                skip_initial_validation = True
         else:
             skip_initial_validation = False
         
@@ -1114,13 +1133,19 @@ class Trainer:
                 # Check if we need to do gradient accumulation
                 grad_accum_steps = getattr(self, 'grad_accum_steps', 1)
                 
-                # Generate batch
+                # Generate batch (text-only or multimodal)
                 batch = self.data_manager.generate_batch(step)
-                
-                # Forward and backward pass
-                (loss, tokens), grad = loss_value_and_grad(
-                    self.model, batch[:, :-1], batch[:, 1:]
-                )
+                if isinstance(batch, tuple):
+                    images, full_tokens = batch
+                    inputs, targets = full_tokens[:, :-1], full_tokens[:, 1:]
+                    (loss, tokens), grad = loss_value_and_grad(
+                        self.model, images, inputs, targets
+                    )
+                else:
+                    inputs, targets = batch[:, :-1], batch[:, 1:]
+                    (loss, tokens), grad = loss_value_and_grad(
+                        self.model, inputs, targets
+                    )
                 
                 # Gradient clipping if configured
                 if 'gradient_clip' in self.config.training.hyperparameters:

@@ -142,7 +142,16 @@ def main():
                     else:
                         logits = output
                     
-                    next_token_logits = logits[-1, :]
+                    # Extract logits for the last token in the sequence
+                    shape = logits.shape
+                    if len(shape) == 3:
+                        # batch x seq_len x vocab
+                        next_token_logits = logits[0, -1, :]
+                    elif len(shape) == 2:
+                        # seq_len x vocab
+                        next_token_logits = logits[-1, :]
+                    else:
+                        raise ValueError(f"Unexpected logits shape: {shape}")
                     
                     # Apply temperature sampling
                     if args.temperature > 0:

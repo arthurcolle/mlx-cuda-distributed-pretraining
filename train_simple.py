@@ -162,9 +162,13 @@ def train_model(args):
     mx.random.seed(args.seed)
     
     # Set default device
-    if args.device == "gpu" and mx.gpu_is_available():
-        mx.set_default_device(mx.gpu)
-        print("Using GPU for training")
+    if args.device == "gpu":
+        try:
+            mx.set_default_device(mx.gpu)
+            print("Using GPU for training")
+        except Exception:
+            mx.set_default_device(mx.cpu)
+            print("Using CPU for training")
     else:
         mx.set_default_device(mx.cpu)
         print("Using CPU for training")

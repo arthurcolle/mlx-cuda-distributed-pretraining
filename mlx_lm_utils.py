@@ -128,7 +128,15 @@ def make_logits_processors(repetition_penalty=1.0, repetition_context_size=0):
                 context = tokens[idx-repetition_context_size:idx]
             
             for t in context:
-                t_idx = int(t)
+                # Convert to scalar index regardless of input type
+                if isinstance(t, mx.array):
+                    if t.size == 1:
+                        t_idx = int(t.item())
+                    else:
+                        continue  # Skip non-scalar arrays
+                else:
+                    t_idx = int(t)
+                
                 logits = logits.at[t_idx].set(logits[t_idx] / repetition_penalty)
             
             return logits
