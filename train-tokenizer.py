@@ -107,6 +107,12 @@ def main():
     args = parser.parse_args()
     
     config = load_config(args.config)
+
+    # Patch: resolve input_file relative to config file if not absolute
+    input_file = config.get("data", {}).get("input_file")
+    if input_file and not os.path.isabs(input_file):
+        config["data"]["input_file"] = os.path.join(os.path.dirname(args.config), input_file)
+
     train_tokenizer(config)
 
 
