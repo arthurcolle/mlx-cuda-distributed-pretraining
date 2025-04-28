@@ -111,8 +111,14 @@ def main():
     # Patch: resolve input_file relative to config file if not absolute
     input_file = config.get("data", {}).get("input_file")
     if input_file and not os.path.isabs(input_file):
-        # Use current working directory as base, not config file directory
-        config["data"]["input_file"] = os.path.abspath(input_file)
+        # Try to find train.jsonl anywhere in the project if not found in cwd
+        import glob
+        matches = glob.glob("**/train.jsonl", recursive=True)
+        if matches:
+            config["data"]["input_file"] = os.path.abspath(matches[0])
+            print(f"Resolved input_file to: {config['data']['input_file']}")
+        else:
+            config["data"]["input_file"] = os.path.abspath(input_file)
 
     train_tokenizer(config)
 
