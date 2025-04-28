@@ -434,8 +434,34 @@ class Model(nn.Module):
                 # Fall back to trying MLX loading formats
                 weights = mx.load(path)
         
+        # Backward-compatibility shim ----------------------------------------------------
+        # Older checkpoints were saved **before** the introduction of the
+        # `AttentionModule` wrapper around the low-level attention implementation
+        # (Simple/Flash/Flex).  Those checkpoints therefore store the projection
+        # matrices directly under `self_attn.<proj_name>` whereas the current
+        # code expects `self_attn.attn.<proj_name>`.
+        #
+        # To remain able to load such checkpoints we detect parameter names that
+        # match the old scheme and rewrite them to the new path by inserting an
+        # extra "attn" component straight after "self_attn".
+        # ---------------------------------------------------------------------------
+        remapped_items = []
+        for k, v in weights.items():
+            if ".self_attn." in k and ".self_attn.attn." not in k:
+                parts = k.split(".")
+                # Insert "attn" after the first occurrence of "self_attn"
+                for idx, part in enumerate(parts):
+                    if part == "self_attn":
+                        if idx + 1 < len(parts) and parts[idx + 1] != "attn":
+                            parts.insert(idx + 1, "attn")
+                        break
+                new_key = ".".join(parts)
+                remapped_items.append((new_key, v))
+            else:
+                remapped_items.append((k, v))
+
         # Convert weights to a properly structured dictionary
-        param_dict = dict(tree_unflatten(list(weights.items())))
+        param_dict = dict(tree_unflatten(remapped_items))
         
         # Get current model parameters
         model_params = dict(tree_flatten(self.parameters()))
