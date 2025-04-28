@@ -111,7 +111,8 @@ def main():
     # Patch: resolve input_file relative to config file if not absolute
     input_file = config.get("data", {}).get("input_file")
     if input_file and not os.path.isabs(input_file):
-        config["data"]["input_file"] = os.path.join(os.path.dirname(args.config), input_file)
+        # Use current working directory as base, not config file directory
+        config["data"]["input_file"] = os.path.abspath(input_file)
 
     train_tokenizer(config)
 
