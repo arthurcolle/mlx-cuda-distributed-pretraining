@@ -190,10 +190,20 @@ def main():
             # Compute distillation loss (KL + CE) in numpy
             import numpy as np
             import mlx
-            # Convert to numpy for loss calculation
-            t_logits = teacher_logits.astype(mx.float32).numpy()
-            s_logits = student_logits.astype(mx.float32).numpy()
-            lbls = mx_labels.numpy()
+
+            # MLX arrays do not have .numpy(), use .to_numpy() instead
+            def to_numpy(arr):
+                # MLX arrays: .to_numpy(), torch tensors: .cpu().numpy(), numpy: passthrough
+                if hasattr(arr, "to_numpy"):
+                    return arr.to_numpy()
+                elif hasattr(arr, "cpu") and hasattr(arr, "numpy"):
+                    return arr.cpu().numpy()
+                else:
+                    return np.array(arr)
+
+            t_logits = to_numpy(teacher_logits.astype(mx.float32))
+            s_logits = to_numpy(student_logits.astype(mx.float32))
+            lbls = to_numpy(mx_labels)
 
             # Soft target loss (KL divergence)
             import torch.nn.functional as F
