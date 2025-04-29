@@ -165,10 +165,47 @@ def main():
             loss = alpha * loss_soft + (1 - alpha) * loss_hard
 
             # Backward/update student (MLX)
-            # (You may want to implement a custom backward/update here for MLX)
-            # For now, just print the loss
+            # Implement MLX student backward and optimizer update
+            import mlx.core as mx
+            import mlx.nn as nn
+            import mlx.optimizers as optim
+
+            # Convert s_logits and lbls to mx.array for MLX loss/grad
+            mx_s_logits = mx.array(s_logits)
+            mx_lbls = mx.array(lbls)
+
+            # Compute loss in MX for backward
+            def mlx_loss_fn(student_params):
+                # Forward pass with current student params
+                # (Assume student is an nn.Module and supports .replace_parameters)
+                student_model = student.replace_parameters(student_params)
+                out_logits = student_model(mx_input_ids)[0].astype(mx.float32)
+                # Cross-entropy loss (hard targets)
+                ce_loss = nn.losses.cross_entropy(
+                    out_logits.reshape(-1, out_logits.shape[-1]),
+                    mx_lbls.reshape(-1),
+                    reduction="mean"
+                )
+                # KL loss (soft targets)
+                mx_teacher_logits = mx.array(t_logits)
+                T = args.temperature
+                log_p = nn.log_softmax(out_logits / T, axis=-1)
+                q = nn.softmax(mx_teacher_logits / T, axis=-1)
+                log_q = nn.log_softmax(mx_teacher_logits / T, axis=-1)
+                kl = mx.mean(mx.sum(q * (log_q - log_p), axis=-1)) * (T * T)
+                return args.alpha * kl + (1 - args.alpha) * ce_loss
+
+            # Compute gradients
+            loss_value, grads = nn.value_and_grad(student, mlx_loss_fn)(student.parameters())
+            # Update student parameters (simple SGD for demonstration)
+            learning_rate = args.learning_rate
+            new_params = {}
+            for k, v in student.parameters().items():
+                new_params[k] = v - learning_rate * grads[k]
+            student = student.replace_parameters(new_params)
+
             if step % 50 == 0:
-                print(f"  Step {step} Loss {loss.item():.4f}")
+                print(f"  Step {step} Loss {loss_value.item():.4f}")
 
     # Save distilled model
     os.makedirs(args.output_dir, exist_ok=True)
