@@ -165,13 +165,8 @@ def main():
             loss = alpha * loss_soft + (1 - alpha) * loss_hard
 
             # Backward/update student (MLX)
-            # Compute gradients and update student using MLX autograd/optimizer
-            # Convert loss to MLX array for backward
-            mx_loss = mx.array(loss.item(), dtype=mx.float32)
-            # Compute gradients
-            grads = nn.grad(student)(mx_input_ids, mx_loss)
-            # You need to define an optimizer for the student model in MLX
-            # For demonstration, we just print the loss and skip optimizer update
+            # (You may want to implement a custom backward/update here for MLX)
+            # For now, just print the loss
             if step % 50 == 0:
                 print(f"  Step {step} Loss {loss.item():.4f}")
 
