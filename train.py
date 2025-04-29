@@ -119,9 +119,13 @@ class Config:
         epochs = training_config.pop('epochs', None)
         
         # Extract resume config if present
-        resume_config = None
-        if 'resume' in config_dict:
-            resume_config = ResumeConfig(**config_dict['resume'])
+        resume_section = config_dict.get('resume', None)
+        if resume_section is None:
+            resume_config = None
+        else:
+            if not isinstance(resume_section, dict):
+                raise ValueError(f"Expected 'resume' section to be a mapping, got {type(resume_section)}")
+            resume_config = ResumeConfig(**resume_section)
         
         return cls(
             name=config_dict['name'],
@@ -793,31 +797,6 @@ class Trainer:
             
             return loss.sum() / ntoks, ntoks
         
-        # Distributed loss computation for MLX-CUDA mixed workload
-        # Here we could partition the batch across devices
-        # For now, we keep it simple - just use the first MLX device
-        device = next(iter(self.device_mgr.device_queues.keys()))
-        
-        def _compute_fwd(model_inputs):
-            # Function to be executed on a specific device
-            model_in, model_tgt = model_inputs
-            logits = model(model_in)
-            logits = logits.astype(mx.float32)
-            loss = nn.losses.cross_entropy(logits, model_tgt)
-            
-            # Mask padding tokens
-            pad_mask = (model_tgt != self.tokenizer.PAD_TOKEN)
-            loss = loss * pad_mask
-            ntoks = pad_mask.sum()
-            
-            return loss.sum(), ntoks
-        
-        # Run the forward pass on the selected device
-        loss_sum, ntoks = self.device_mgr.run_on_device(
-            device, _compute_fwd, (inputs, targets)
-        )
-        
-        return loss_sum / ntoks, ntoks
         
     def validate(self) -> float:
         """Run validation on the validation dataset.
