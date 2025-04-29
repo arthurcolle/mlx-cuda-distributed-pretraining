@@ -1258,6 +1258,17 @@ def main():
     # Make 'runs' directory if it doesn't exist
     os.makedirs('runs', exist_ok=True)
     
+    # Check if config file exists, print helpful error if not
+    if not os.path.exists(args.config):
+        print(f"ERROR: Config file '{args.config}' not found.")
+        print("Please provide a valid config YAML file. Example:")
+        print("    python train.py path/to/your_config.yaml")
+        print("Available configs in this directory or subdirectories:")
+        for root, dirs, files in os.walk('.'):
+            for file in files:
+                if file.endswith('.yaml') or file.endswith('.yml'):
+                    print("   ", os.path.join(root, file))
+        exit(1)
     # Load config
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
