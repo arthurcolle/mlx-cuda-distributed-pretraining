@@ -71,6 +71,7 @@ def get_model_args(vocab_size):
     """Configure model architecture for a 100M parameter model."""
     model_args = {
         # Approximately 100M parameters
+        "model_type": "llama",
         "vocab_size": vocab_size,
         "hidden_size": 768,         # Embedding dimension
         "intermediate_size": 2048,  # MLP intermediate size
