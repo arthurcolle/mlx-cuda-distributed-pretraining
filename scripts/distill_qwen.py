@@ -134,6 +134,15 @@ def main():
         student_type = 'hf'
         # Always use student tokenizer for tokenization
         tokenizer = AutoTokenizer.from_pretrained(args.student_name, use_fast=True)
+        # Ensure pad_token is set for padding
+        if tokenizer.pad_token is None:
+            if tokenizer.eos_token is not None:
+                print("Student tokenizer has no pad_token, setting pad_token to eos_token.")
+                tokenizer.pad_token = tokenizer.eos_token
+            else:
+                print("Student tokenizer has no pad_token or eos_token, adding [PAD] as pad_token.")
+                tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+                student.resize_token_embeddings(len(tokenizer))
     student.train()
 
     # Warn if teacher and student tokenizers are not the same
