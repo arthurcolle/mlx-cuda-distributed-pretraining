@@ -33,10 +33,25 @@ def distillation_loss(student_logits, teacher_logits, labels, temperature, alpha
 
 def tokenize_fn(examples, tokenizer, max_length):
     # expects examples to have a 'text' field
-    out = tokenizer(
-        examples['text'], padding='max_length', truncation=True,
-        max_length=max_length, return_tensors=None
-    )
+    texts = examples['text']
+    # Handle HuggingFace and MLX tokenizers
+    if callable(tokenizer):
+        out = tokenizer(
+            texts, padding='max_length', truncation=True,
+            max_length=max_length, return_tensors=None
+        )
+    elif hasattr(tokenizer, "batch_encode") or hasattr(tokenizer, "batch_encode_plus"):
+        # MLX TokenizerWrapper
+        if hasattr(tokenizer, "batch_encode"):
+            batch_encode = tokenizer.batch_encode
+        else:
+            batch_encode = tokenizer.batch_encode_plus
+        out = batch_encode(
+            texts, padding='max_length', truncation=True,
+            max_length=max_length, return_tensors=None
+        )
+    else:
+        raise ValueError("Unknown tokenizer type: cannot tokenize input.")
     # labels are just the input_ids (auto-regressive LM)
     out['labels'] = out['input_ids'].copy()
     return out
