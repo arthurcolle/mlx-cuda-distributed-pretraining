@@ -10,6 +10,15 @@ from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 
+# Optionally support MLX as teacher
+def try_load_mlx_teacher(teacher_name):
+    try:
+        from mlx_lm import load as mlx_load
+        model, tokenizer = mlx_load(teacher_name)
+        return model, tokenizer
+    except Exception:
+        return None, None
+
 def distillation_loss(student_logits, teacher_logits, labels, temperature, alpha):
     # Soft target loss (KL divergence)
     p_student = F.log_softmax(student_logits / temperature, dim=-1)
@@ -35,11 +44,11 @@ def tokenize_fn(examples, tokenizer, max_length):
 def main():
     parser = argparse.ArgumentParser(description="Distill Qwen into a smaller student model.")
     parser.add_argument('--teacher_name', type=str, required=True,
-                        help='HuggingFace name or path for the Qwen teacher model')
+                        help='HuggingFace or MLX name/path for the Qwen teacher model')
     parser.add_argument('--student_name', type=str, required=True,
                         help='HuggingFace name or path for the student model to initialize')
     parser.add_argument('--dataset', type=str, required=True,
-                        help='Path to JSONL dataset with a field "text" for inputs')
+                        help='Path to JSONL dataset with a field \"text\" for inputs')
     parser.add_argument('--output_dir', type=str, required=True,
                         help='Where to save the distilled student model')
     parser.add_argument('--batch_size', type=int, default=8)
@@ -51,16 +60,36 @@ def main():
                         help='Weight for soft-target loss (vs. hard-label loss)')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Device for training (e.g., cuda or cpu)')
+    parser.add_argument('--teacher_type', type=str, default='auto', choices=['auto', 'hf', 'mlx'],
+                        help='Force teacher type: auto (try MLX, fallback to HF), hf, or mlx')
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() or args.device == 'cpu' else 'cpu')
-    # Load teacher
-    print(f"Loading teacher model {args.teacher_name}...")
-    teacher = AutoModelForCausalLM.from_pretrained(
-        args.teacher_name, torch_dtype=torch.float16
-    ).to(device)
-    teacher.eval()
-    tokenizer = AutoTokenizer.from_pretrained(args.teacher_name, use_fast=True)
+
+    # Load teacher (MLX or HF)
+    teacher = None
+    teacher_tokenizer = None
+    teacher_type = args.teacher_type
+    if teacher_type == 'mlx' or teacher_type == 'auto':
+        teacher, teacher_tokenizer = try_load_mlx_teacher(args.teacher_name)
+        if teacher is not None:
+            teacher_type = 'mlx'
+    if teacher is None and (teacher_type == 'hf' or teacher_type == 'auto'):
+        print(f"Loading teacher model {args.teacher_name} (HuggingFace)...")
+        teacher = AutoModelForCausalLM.from_pretrained(
+            args.teacher_name, torch_dtype=torch.float16
+        ).to(device)
+        teacher.eval()
+        teacher_tokenizer = AutoTokenizer.from_pretrained(args.teacher_name, use_fast=True)
+        teacher_type = 'hf'
+    elif teacher is not None:
+        print(f"Loaded MLX teacher model {args.teacher_name}")
+    else:
+        raise RuntimeError("Could not load teacher model (tried MLX and HuggingFace).")
+
+    # Use teacher_tokenizer for data
+    tokenizer = teacher_tokenizer
+
     # Load student
     print(f"Loading student model {args.student_name}...")
     student = AutoModelForCausalLM.from_pretrained(args.student_name).to(device)
