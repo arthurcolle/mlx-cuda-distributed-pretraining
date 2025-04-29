@@ -79,7 +79,12 @@ def main():
                         help='Force teacher type: auto (try MLX, fallback to HF), hf, or mlx')
     args = parser.parse_args()
 
-    device = torch.device(args.device if torch.cuda.is_available() or args.device == 'cpu' else 'cpu')
+    # Set MLX device (ignore torch.device)
+    import mlx.core as mx
+    if args.device == "gpu":
+        mx.set_default_device(mx.gpu)
+    else:
+        mx.set_default_device(mx.cpu)
 
     # Load teacher (MLX or HF)
     teacher = None
