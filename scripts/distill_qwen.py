@@ -98,7 +98,7 @@ def main():
         print(f"Loading teacher model {args.teacher_name} (HuggingFace)...")
         teacher = AutoModelForCausalLM.from_pretrained(
             args.teacher_name, torch_dtype=torch.float16
-        ).to(device)
+        ).to(args.device)
         teacher.eval()
         teacher_tokenizer = AutoTokenizer.from_pretrained(args.teacher_name, use_fast=True)
         teacher_type = 'hf'
@@ -112,7 +112,7 @@ def main():
 
     # Load student
     print(f"Loading student model {args.student_name}...")
-    student = AutoModelForCausalLM.from_pretrained(args.student_name).to(device)
+    student = AutoModelForCausalLM.from_pretrained(args.student_name).to(args.device)
     student.train()
 
     # Load dataset
@@ -129,9 +129,9 @@ def main():
     for epoch in range(1, args.epochs + 1):
         print(f"Epoch {epoch}/{args.epochs}")
         for step, batch in enumerate(loader, start=1):
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            labels = batch['labels'].to(device)
+            input_ids = batch['input_ids'].to(args.device)
+            attention_mask = batch['attention_mask'].to(args.device)
+            labels = batch['labels'].to(args.device)
             # MLX-only version: use MLX for both teacher and student
             import mlx.core as mx
             import mlx.nn as nn
