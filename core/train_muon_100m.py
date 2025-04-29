@@ -24,10 +24,10 @@ from tokenizers import Tokenizer
 # Import custom optimizers
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from mlx_optimizers import Muon
+from optimizers.muon import Muon
 
 try:
-    from arch.llama import Model, ModelArgs
+    from models.llama import Model, ModelArgs
     USING_FLASH_ATTENTION = True
     print("Using custom Llama implementation with FlashAttention")
 except ImportError:
