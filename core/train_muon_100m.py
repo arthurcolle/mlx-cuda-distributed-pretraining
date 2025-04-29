@@ -346,7 +346,10 @@ def train():
     mx.random.seed(args.seed)
     
     # Set device
-    mx.set_default_device(args.device)
+    if args.device == "gpu":
+        mx.set_default_device(mx.gpu)
+    else:
+        mx.set_default_device(mx.cpu)
     
     # Create config
     config = create_config()
