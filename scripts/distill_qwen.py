@@ -115,9 +115,6 @@ def main():
     else:
         raise RuntimeError("Could not load teacher model (tried MLX and HuggingFace).")
 
-    # Use teacher_tokenizer for data
-    tokenizer = teacher_tokenizer
-
     # Load student model (MLX or HuggingFace)
     print(f"Loading student model {args.student_name}...")
     # Try loading via MLX
@@ -126,16 +123,28 @@ def main():
         student = student_mlx
         student_type = 'mlx'
         print(f"Loaded MLX student model {args.student_name}")
+        # Use MLX tokenizer if available, else fallback to teacher_tokenizer
+        if student_tokenizer_mlx is not None:
+            tokenizer = student_tokenizer_mlx
+        else:
+            tokenizer = teacher_tokenizer
     else:
         print(f"Loading student model {args.student_name} (HuggingFace)...")
         student = AutoModelForCausalLM.from_pretrained(args.student_name).to(args.device)
         student_type = 'hf'
+        # Always use student tokenizer for tokenization
+        tokenizer = AutoTokenizer.from_pretrained(args.student_name, use_fast=True)
     student.train()
+
+    # Warn if teacher and student tokenizers are not the same
+    if teacher_tokenizer is not None and tokenizer is not None and hasattr(teacher_tokenizer, "vocab_size") and hasattr(tokenizer, "vocab_size"):
+        if teacher_tokenizer.vocab_size != tokenizer.vocab_size:
+            print(f"Warning: Teacher tokenizer vocab size ({teacher_tokenizer.vocab_size}) != student tokenizer vocab size ({tokenizer.vocab_size}). Using student tokenizer for data.")
 
     # Load dataset
     print(f"Loading dataset from {args.dataset}...")
     ds = load_dataset('json', data_files={'train': args.dataset}, split='train')
-    # Tokenize
+    # Tokenize with student tokenizer
     ds = ds.map(lambda ex: tokenize_fn(ex, tokenizer, args.max_length),
                 batched=True, remove_columns=ds.column_names)
     ds.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
