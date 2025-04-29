@@ -161,8 +161,13 @@ def main():
 
     optimizer = torch.optim.AdamW(student.parameters(), lr=args.learning_rate)
     # Training loop
+    import sys
+    import time
+
     for epoch in range(1, args.epochs + 1):
         print(f"Epoch {epoch}/{args.epochs}")
+        total_loss = 0.0
+        start_time = time.time()
         for step, batch in enumerate(loader, start=1):
             input_ids = batch['input_ids'].to(args.device)
             attention_mask = batch['attention_mask'].to(args.device)
@@ -260,8 +265,21 @@ def main():
                 new_params[k] = v - learning_rate * grads[k]
             student = student.replace_parameters(new_params)
 
-            if step % 50 == 0:
-                print(f"  Step {step} Loss {loss_value.item():.4f}")
+            total_loss += loss_value.item()
+
+            # Progress bar every 10 steps
+            if step % 10 == 0 or step == 1:
+                elapsed = time.time() - start_time
+                avg_loss = total_loss / step
+                sys.stdout.write(
+                    f"\r  Step {step} | Avg Loss: {avg_loss:.4f} | Elapsed: {elapsed:.1f}s"
+                )
+                sys.stdout.flush()
+            # Print newline every 100 steps for readability
+            if step % 100 == 0:
+                print()
+        print()  # Newline after epoch
+        print(f"Epoch {epoch} completed. Average Loss: {total_loss / step:.4f}")
 
     # Save distilled model
     os.makedirs(args.output_dir, exist_ok=True)
