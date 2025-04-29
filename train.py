@@ -1269,6 +1269,8 @@ def main():
                 if file.endswith('.yaml') or file.endswith('.yml'):
                     print("   ", os.path.join(root, file))
         exit(1)
+    else:
+        print(f"Config file '{args.config}' found. Proceeding with training.")
     # Load config
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
