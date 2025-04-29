@@ -135,10 +135,14 @@ def main():
                     ).logits
                 elif teacher_type == 'mlx':
                     import numpy as np
+                    import mlx.core as mx
+                    # Convert input_ids to numpy, then to mlx array, then to int32
                     np_input_ids = input_ids.cpu().numpy()
-                    # MLX models do not accept attention_mask as a kwarg; just pass input_ids
-                    teacher_logits = teacher(np_input_ids)[0]
-                    teacher_logits = torch.tensor(teacher_logits, dtype=torch.float32, device=device)
+                    mx_input_ids = mx.array(np_input_ids).astype(mx.int32)
+                    # MLX models expect mx.array of int32, not numpy array
+                    teacher_logits = teacher(mx_input_ids)[0]
+                    # Convert back to numpy, then to torch tensor
+                    teacher_logits = torch.tensor(teacher_logits.numpy(), dtype=torch.float32, device=device)
                 else:
                     raise RuntimeError("Unknown teacher type")
             student_outputs = student(
