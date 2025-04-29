@@ -113,10 +113,19 @@ def main():
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
             with torch.no_grad():
-                teacher_logits = teacher(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask
-                ).logits
+                if teacher_type == 'hf':
+                    teacher_logits = teacher(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask
+                    ).logits
+                elif teacher_type == 'mlx':
+                    import numpy as np
+                    np_input_ids = input_ids.cpu().numpy()
+                    np_attention_mask = attention_mask.cpu().numpy()
+                    teacher_logits = teacher(np_input_ids, attention_mask=np_attention_mask)[0]
+                    teacher_logits = torch.tensor(teacher_logits, dtype=torch.float32, device=device)
+                else:
+                    raise RuntimeError("Unknown teacher type")
             student_outputs = student(
                 input_ids=input_ids,
                 attention_mask=attention_mask
