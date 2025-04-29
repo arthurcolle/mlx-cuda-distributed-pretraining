@@ -136,8 +136,8 @@ def main():
                 elif teacher_type == 'mlx':
                     import numpy as np
                     np_input_ids = input_ids.cpu().numpy()
-                    np_attention_mask = attention_mask.cpu().numpy()
-                    teacher_logits = teacher(np_input_ids, attention_mask=np_attention_mask)[0]
+                    # MLX models do not accept attention_mask as a kwarg; just pass input_ids
+                    teacher_logits = teacher(np_input_ids)[0]
                     teacher_logits = torch.tensor(teacher_logits, dtype=torch.float32, device=device)
                 else:
                     raise RuntimeError("Unknown teacher type")
