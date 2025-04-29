@@ -330,6 +330,13 @@ def train():
     parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--device", type=str, default="gpu", help="Device to use (gpu/cpu)")
+    # -- distillation arguments
+    parser.add_argument("--teacher_checkpoint", type=str, default=None,
+                        help="Path to teacher model safetensors (e.g. runs/Muon-100M/checkpoints/step_final_model)")
+    parser.add_argument("--distill_alpha", type=float, default=0.5,
+                        help="Weight for teacher KL loss vs student CE loss")
+    parser.add_argument("--distill_temp", type=float, default=2.0,
+                        help="Temperature for distillation soft targets")
     
     args = parser.parse_args()
     
@@ -359,6 +366,19 @@ def train():
     
     # Create model
     model = create_llm_model(vocab_size)
+
+    # If online distillation, load + freeze teacher
+    if args.teacher_checkpoint:
+        # instantiate same architecture
+        teacher = create_llm_model(vocab_size)
+        # load teacher weights (expects a pytree/list of arrays saved via mx.save)
+        teacher_params = mx.load(args.teacher_checkpoint + ".safetensors")
+        # overwrite teacher parameters wholesale
+        # note: create_llm_model returns a nn.Module; replace its internal pytree
+        teacher = teacher.replace_parameters(teacher_params)
+        teacher.eval()
+        # freeze (stop grads through teacher)
+        teacher = mx.stop_gradient(teacher)
     
     # Create optimizer
     optimizer, lr_schedule, total_steps = create_optimizer(
@@ -371,32 +391,51 @@ def train():
     @mx.compile
     def train_step(model, inputs, optimizer, step):
         def loss_fn(model):
-            # Forward pass with inputs
+            # slice off last token for inputs / first token for targets
             input_ids = inputs[:, :-1]
             target_ids = inputs[:, 1:]
-            
-            logits = model(input_ids)
-            
-            # Compute loss
-            loss = nn.losses.cross_entropy(
-                logits.reshape(-1, logits.shape[-1]),
+            # student forward
+            stud_logits = model(input_ids)             # [B, L-1, V]
+            B, Lm1, V = stud_logits.shape
+
+            # hard CE to gold tokens
+            ce = nn.losses.cross_entropy(
+                stud_logits.reshape(-1, V),
                 target_ids.reshape(-1),
                 reduction="mean"
             )
+
+            # if teacher is present, add softened KL
+            if args.teacher_checkpoint:
+                # teacher forward (frozen)
+                t_logits = teacher(input_ids)           # [B, L-1, V]
+                T = args.distill_temp
+                # log p_s(T)
+                log_p = nn.log_softmax(stud_logits / T, axis=-1)
+                # q_t(T) & log q_t(T)
+                q = nn.softmax (t_logits      / T, axis=-1)
+                log_q = nn.log_softmax(t_logits / T, axis=-1)
+                # KL = E_q[ log q - log p ]
+                # sum over vocab, mean over batch*seq
+                kl = mx.mean(mx.sum(q * (log_q - log_p), axis=-1)) * (T*T)
+                loss = args.distill_alpha * kl + (1 - args.distill_alpha) * ce
+            else:
+                loss = ce
+
             return loss
-        
+
         # Calculate loss and gradients
         loss, grads = nn.value_and_grad(loss_fn)(model)
-        
+
         # Update model parameters
         model = optimizer.update(model, grads)
-        
+
         # Get current learning rate
         if callable(optimizer.learning_rate):
             lr = optimizer.learning_rate(step)
         else:
             lr = optimizer.learning_rate
-            
+
         return model, optimizer, loss, lr
     
     # Training loop
