@@ -73,11 +73,19 @@ def main():
     parser.add_argument('--temperature', type=float, default=2.0)
     parser.add_argument('--alpha', type=float, default=0.5,
                         help='Weight for soft-target loss (vs. hard-label loss)')
-    parser.add_argument('--device', type=str, default='cuda',
+    parser.add_argument('--device', type=str, default='cpu',
                         help='Device for training (e.g., cuda or cpu)')
     parser.add_argument('--teacher_type', type=str, default='auto', choices=['auto', 'hf', 'mlx'],
                         help='Force teacher type: auto (try MLX, fallback to HF), hf, or mlx')
     args = parser.parse_args()
+    # Fallback to CPU if CUDA is requested but not available
+    try:
+        import torch
+        if args.device == 'cuda' and not torch.cuda.is_available():
+            print("Warning: CUDA not available, falling back to CPU.")
+            args.device = 'cpu'
+    except ImportError:
+        pass
 
     # Set MLX device (ignore torch.device)
     import mlx.core as mx
@@ -110,9 +118,18 @@ def main():
     # Use teacher_tokenizer for data
     tokenizer = teacher_tokenizer
 
-    # Load student
+    # Load student model (MLX or HuggingFace)
     print(f"Loading student model {args.student_name}...")
-    student = AutoModelForCausalLM.from_pretrained(args.student_name).to(args.device)
+    # Try loading via MLX
+    student_mlx, student_tokenizer_mlx = try_load_mlx_teacher(args.student_name)
+    if student_mlx is not None:
+        student = student_mlx
+        student_type = 'mlx'
+        print(f"Loaded MLX student model {args.student_name}")
+    else:
+        print(f"Loading student model {args.student_name} (HuggingFace)...")
+        student = AutoModelForCausalLM.from_pretrained(args.student_name).to(args.device)
+        student_type = 'hf'
     student.train()
 
     # Load dataset
@@ -140,11 +157,17 @@ def main():
             mx_attention_mask = mx.array(attention_mask.cpu().numpy()).astype(mx.int32)
             mx_labels = mx.array(labels.cpu().numpy()).astype(mx.int32)
 
-            # Forward pass teacher (no grad)
-            teacher_logits = teacher(mx_input_ids)[0]
+            # Forward pass teacher
+            if teacher_type == 'mlx':
+                teacher_logits = teacher(mx_input_ids)[0]
+            else:
+                teacher_logits = teacher(input_ids)[0]
 
             # Forward pass student
-            student_logits = student(mx_input_ids)[0]
+            if student_type == 'mlx':
+                student_logits = student(mx_input_ids)[0]
+            else:
+                student_logits = student(input_ids)[0]
 
             # Compute distillation loss (KL + CE) in numpy
             import numpy as np
