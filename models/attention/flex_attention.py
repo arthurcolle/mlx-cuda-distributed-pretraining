@@ -133,7 +133,7 @@ class FlexAttention(Module):
                             indices = mx.array([b, h, q_block, kv_block])
                             
                             # Create mask to update this specific position using the more efficient approach
-                            mask_data = scatter(mask_data, indices, mx.array(True))
+                            mask_data = scatter(mask_data, indices, mx.full(indices.shape, True))
         
         return mask_data
     
