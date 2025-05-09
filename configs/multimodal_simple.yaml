@@ -1,0 +1,68 @@
+name: multimodal-simple
+overwrite: false
+data:
+  input_file: data/multimodal_train.jsonl  # replace with your image+text JSONL
+  preprocessing:
+    max_context_size: 128
+    chunk_overlap: 32
+    image_size: 224
+  tokenizer:
+    normal_vocab_size: 256
+    special_tokens:
+      pad: "[PAD]"
+      bos: "[BOS]"
+      eos: "[EOS]"
+model:
+  architecture: multimodal_llama
+  dimensions:
+    hidden_size: 256
+    intermediate_size: 1024
+    num_layers: 4
+  attention:
+    num_heads: 4
+    head_dim: 64
+    num_kv_heads: 4
+    use_flash_attention: true
+    use_flex_attention: false
+    flash_block_size: 64
+  normalization:
+    rms_norm_eps: 1e-5
+  rope:
+    theta: 10000.0
+    traditional: false
+    scaling: null
+  misc:
+    attention_bias: false
+    mlp_bias: false
+    tie_word_embeddings: true
+    logit_scale: null
+training:
+  hyperparameters:
+    batch_size: 16
+    iters: 10000
+    learning_rate: 1e-4
+    weight_decay: 0.01
+    gradient_accumulation_steps: 1
+    gradient_clip: 1.0
+  scheduler:
+    schedule: linear
+    warmup_ratio: 0.1
+  optimization:
+    optimizer: adamw
+    betas: [0.9, 0.95]
+  epochs: null
+logging:
+  log_dir: logs/multimodal-simple
+  checkpoint_dir: checkpoints/multimodal-simple
+  steps:
+    logging_interval: 100
+    validation_interval: 500
+  metrics:
+    loss: true
+system:
+  seed: 42
+  device: gpu
+  distributed: false
+  devices: ["gpu"]
+  cuda_devices: [0]
+  memory_limit: null
