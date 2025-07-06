@@ -467,11 +467,11 @@ class DataManager:
         if self.config.validation_file:
             self._load_file(self.config.validation_file, self.val_docs)
             
-            # Set up validation batches
+            # Set up validation batches (including last partial batch)
             self.val_idx = sorted(range(len(self.val_docs)), key=lambda idx: len(self.val_docs[idx]))
             self.val_batch_idx = [
-                self.val_idx[i : i + self.batch_size : 1]
-                for i in range(0, len(self.val_idx) - self.batch_size + 1, self.batch_size)
+                self.val_idx[i : min(i + self.batch_size, len(self.val_idx))]
+                for i in range(0, len(self.val_idx), self.batch_size)
             ]
             self.val_indices = np.random.permutation(len(self.val_batch_idx))
             self.val_ptr = 0  # Pointer for validation batches

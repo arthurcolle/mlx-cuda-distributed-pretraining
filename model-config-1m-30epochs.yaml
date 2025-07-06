@@ -5,8 +5,8 @@ data:
   validation_file: "val.jsonl"
   tokenizer_path: "tokenizer"
   preprocessing:
-    max_context_size: 512
-    chunk_overlap: 64
+    max_context_size: 128
+    chunk_overlap: 16
     
   tokenizer:
     normal_vocab_size: 32000
@@ -25,8 +25,8 @@ model:
     num_heads: 4
     num_kv_heads: 4
     head_dim: 32
-    max_position_embeddings: 512
-    use_flash_attention: false
+    max_position_embeddings: 128
+    use_flash_attention: true
   normalization:
     rms_norm_eps: 1.0e-5
   rope:
